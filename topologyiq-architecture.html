@@ -1,0 +1,331 @@
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:var(--font-sans,"Anthropic Sans",system-ui,sans-serif);color:var(--color-text-primary,#1a1a1a);line-height:1.7;padding:2rem 0}
+.wrap{max-width:720px;margin:0 auto;padding:0 1.5rem}
+h1{font-size:22px;font-weight:500;margin:0 0 0.5rem}
+h2{font-size:18px;font-weight:500;margin:2.5rem 0 0.75rem;padding-top:1.5rem;border-top:0.5px solid var(--color-border-tertiary,#e0e0e0)}
+h3{font-size:16px;font-weight:500;margin:1.5rem 0 0.5rem}
+p{margin:0 0 1rem;font-size:15px}
+.subtitle{font-size:14px;color:var(--color-text-secondary,#666);margin:-0.25rem 0 1.5rem}
+.card{background:var(--color-background-primary,#fff);border:0.5px solid var(--color-border-tertiary,#e0e0e0);border-radius:12px;padding:1.25rem;margin:1rem 0}
+.card-accent{border:2px solid var(--color-border-info,#378ADD)}
+.metric-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:1rem 0}
+.metric{background:var(--color-background-secondary,#f5f5f5);border-radius:8px;padding:0.75rem 1rem}
+.metric-label{font-size:12px;color:var(--color-text-secondary,#666)}
+.metric-val{font-size:20px;font-weight:500;margin-top:2px}
+.flow-step{display:flex;gap:12px;align-items:flex-start;margin:0.75rem 0}
+.step-num{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:500;flex-shrink:0;margin-top:2px}
+.step-teal .step-num{background:#E1F5EE;color:#085041}
+.step-purple .step-num{background:#EEEDFE;color:#3C3489}
+.step-coral .step-num{background:#FAECE7;color:#712B13}
+.step-content{font-size:14px;line-height:1.6}
+.step-content strong{font-weight:500}
+.tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:6px;margin-right:4px}
+.tag-new{background:#FAECE7;color:#993C1D}
+.tag-revised{background:#FAEEDA;color:#854F0B}
+.tag-ok{background:#EAF3DE;color:#3B6D11}
+.chat-bubble{border-radius:12px;padding:0.75rem 1rem;margin:0.5rem 0;font-size:13px;line-height:1.6;max-width:85%}
+.chat-user{background:var(--color-background-info,#E6F1FB);color:var(--color-text-info,#0C447C);margin-left:auto}
+.chat-ai{background:var(--color-background-secondary,#f5f5f5);color:var(--color-text-primary,#1a1a1a)}
+.naming-example{font-family:var(--font-mono,monospace);font-size:13px;background:var(--color-background-secondary,#f5f5f5);border-radius:8px;padding:1rem;margin:0.75rem 0;line-height:1.8;overflow-x:auto}
+.cols-2{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}
+.pipeline-item{padding:0.75rem 1rem;border-radius:8px;margin:0.5rem 0;font-size:14px}
+.pipe-0{background:#FAECE7;border-left:3px solid #D85A30;border-radius:0}
+.pipe-1{background:#E1F5EE;border-left:3px solid #1D9E75;border-radius:0}
+.pipe-2{background:#E1F5EE;border-left:3px solid #1D9E75;border-radius:0}
+.pipe-3{background:#EEEDFE;border-left:3px solid #7F77DD;border-radius:0}
+.pipe-4{background:#EEEDFE;border-left:3px solid #7F77DD;border-radius:0}
+.pipe-5{background:#F1EFE8;border-left:3px solid #888780;border-radius:0}
+.divider{height:1px;background:var(--color-border-tertiary,#e0e0e0);margin:2rem 0}
+.tab-strip{display:flex;gap:0;margin:1rem 0 0.5rem;border-bottom:0.5px solid var(--color-border-tertiary,#e0e0e0)}
+.tab-item{padding:8px 16px;font-size:13px;color:var(--color-text-secondary,#666);cursor:pointer}
+.tab-item.active{color:var(--color-text-primary,#1a1a1a);border-bottom:2px solid var(--color-text-info,#378ADD)}
+</style>
+
+<div class="wrap">
+
+<h1>TopologyIQ — complete architecture design</h1>
+<p class="subtitle">Intelligent middleware topology management platform</p>
+
+<div class="card card-accent">
+<p style="font-size:14px;font-weight:500;margin-bottom:8px">Core thesis</p>
+<p style="font-size:14px;margin:0">Every middleware topology is a directed graph. TopologyIQ treats it as one — optimizing with graph algorithms, onboarding new apps with auto-generated naming and placement, and letting users converse with their topology through an AI agent. Same engine works for MQ, Kafka, or RabbitMQ.</p>
+</div>
+
+<h2>System overview</h2>
+
+<p>The platform has three layers: a <strong>graph engine</strong> (the muscle), an <strong>AI brain</strong> (Claude), and <strong>three user-facing modes</strong>. All three modes share the same underlying graph representation and reasoning capabilities.</p>
+
+<div class="metric-grid">
+<div class="metric"><p class="metric-label">Mode 1</p><p class="metric-val" style="font-size:16px">Optimize</p><p style="font-size:12px;color:var(--color-text-secondary,#666);margin-top:2px">Fix the existing mess</p></div>
+<div class="metric"><p class="metric-label">Mode 2</p><p class="metric-val" style="font-size:16px">Onboard</p><p style="font-size:12px;color:var(--color-text-secondary,#666);margin-top:2px">Connect new apps</p></div>
+<div class="metric"><p class="metric-label">Mode 3</p><p class="metric-val" style="font-size:16px">Converse</p><p style="font-size:12px;color:var(--color-text-secondary,#666);margin-top:2px">Chat with topology</p></div>
+</div>
+
+<h2>Layer 1 — graph engine (the core)</h2>
+
+<h3>Abstract data model</h3>
+<p>Four entity types that map to any middleware:</p>
+
+<div class="cols-2">
+<div class="card">
+<p style="font-size:14px;font-weight:500;margin-bottom:6px">TopologyNode</p>
+<p style="font-size:13px;margin:0;color:var(--color-text-secondary,#666)">MQ: queue manager<br>Kafka: broker<br>RabbitMQ: virtual host<br><br>Fields: id, name, type, region, business_metadata (TRTC, PCI, neighborhood, line_of_business)</p>
+</div>
+<div class="card">
+<p style="font-size:14px;font-weight:500;margin-bottom:6px">TopologyEdge</p>
+<p style="font-size:13px;margin:0;color:var(--color-text-secondary,#666)">MQ: sender/receiver channel<br>Kafka: replication link<br>RabbitMQ: binding<br><br>Fields: source_node, target_node, edge_type, name (auto-generated from naming engine)</p>
+</div>
+<div class="card">
+<p style="font-size:14px;font-weight:500;margin-bottom:6px">TopologyPort</p>
+<p style="font-size:13px;margin:0;color:var(--color-text-secondary,#666)">MQ: queue (local/remote/alias/xmit)<br>Kafka: topic-partition<br>RabbitMQ: queue<br><br>Fields: node_id, name, direction (Local | Remote | Alias | Transmission), remote_target</p>
+</div>
+<div class="card">
+<p style="font-size:14px;font-weight:500;margin-bottom:6px">TopologyClient</p>
+<p style="font-size:13px;margin:0;color:var(--color-text-secondary,#666)">Any app producing or consuming messages<br><br>Fields: app_id, app_name, home_node_id, role (Producer | Consumer), business_metadata (hosting_type, app_disposition, criticality)</p>
+</div>
+</div>
+
+<h3>Naming convention engine</h3>
+<p>One of the most practical features. Given a producer app and consumer app, the engine generates all MQ object names deterministically. Derived from the pattern visible in the sample data:</p>
+
+<div class="naming-example">
+Queue naming pattern:
+  {PROD_APP}.{CONS_APP}.{SYSTEM}.{FUNCTION}.{SUFFIX}
+
+  SUFFIX values: RQST (request), RESP (response),
+                 ACK (acknowledgment), DAT (data)
+
+Example — app PAYMENTS sends to app SETTLEMENT:
+  Local queue:  PAYMENTS.SETTLE.PAYHUB.TXN.DAT
+  Remote queue: PAYMENTS.SETTLE.PAYHUB.TXN.DAT  (on producer's QM)
+  Alias:        PAYMENTS.SETTLE.PAYHUB.TXN.DAT.XA21  (if needed)
+  XMIT queue:   SETTLE.{TARGET_QM_NAME}
+
+Channel naming pattern:
+  Sender:   {FROM_QM}.TO.{TO_QM}
+  Receiver: {TO_QM}.FROM.{FROM_QM}
+
+Example:
+  Sender:   WL6EX2C.TO.WQ26
+  Receiver: WQ26.FROM.WL6EX2C
+</div>
+
+<p>The naming engine is pluggable — organizations can supply their own convention as a template, and the engine applies it consistently. No more ad-hoc queue names.</p>
+
+<h3>Optimization pipeline (revised)</h3>
+
+<div class="pipeline-item pipe-0"><span class="tag tag-new">new</span> <strong>Stage 0: graph discovery</strong> — Infer channels from remote_q_mgr + xmit_q pairs. Classify all ports (Local/Remote/Alias/Transmission). Build the edge set. This is where we go from flat CSV to graph.</div>
+
+<div class="pipeline-item pipe-1"><span class="tag tag-revised">revised</span> <strong>Stage 1: constraint enforcement</strong> — 1 QM per app. Home QM election uses q_type + role to distinguish actual connectivity from data lineage references. Producer + non-alias queue = real connection. App_id on alias = just a routing reference.</div>
+
+<div class="pipeline-item pipe-2"><span class="tag tag-ok">unchanged</span> <strong>Stage 2: dead object pruning</strong> — Remove orphan QMs (no clients, no active traffic), orphan queues (no producer AND no consumer), unused aliases, dead channels.</div>
+
+<div class="pipeline-item pipe-3"><span class="tag tag-ok">unchanged</span> <strong>Stage 3: community detection (Louvain)</strong> — Run on undirected QM graph. Discovers natural clusters. Guard: skip hub-spoke for communities with fewer than 3 members.</div>
+
+<div class="pipeline-item pipe-4"><span class="tag tag-revised">revised</span> <strong>Stage 4: hub election + spoke wiring</strong> — Hub = highest betweenness centrality weighted by business criticality (PCI, TRTC, payment-critical). Replace N*(N-1) mesh channels with N spoke channels to hub. Cross-community traffic routes hub-to-hub.</div>
+
+<div class="pipeline-item pipe-5"><span class="tag tag-ok">unchanged</span> <strong>Stage 5: queue + channel rationalization</strong> — Apply naming engine. Wire remote → xmit → channel → local paths. Decide alias retention/elimination (explainer justifies). Output target CSV in same schema as input.</div>
+
+<h3>Complexity scorer</h3>
+<div class="naming-example">
+C = 1.0 * |nodes|
+  + 2.0 * |edges|
+  + 5.0 * avg_degree
+  + 8.0 * max_fan_out
+  + 10.0 * avg_path_length
+  + 15.0 * cycle_count
+  + 3.0 * orphan_objects
+  + 4.0 * cross_community_edges
+  + 20.0 * density
+
+Scored at every stage boundary.
+Waterfall shows each stage's contribution.
+</div>
+
+<h2>Layer 2 — AI brain (Claude)</h2>
+
+<p>Claude operates as three specialized agents, all sharing the same graph context:</p>
+
+<div class="card">
+<p style="font-size:14px;font-weight:500;margin-bottom:8px">Inventory agent</p>
+<p style="font-size:13px;margin:0">Discovers the as-is topology from CSV. Maps every producer-to-consumer flow. Flags anomalies: orphan objects, constraint violations, unusual patterns (e.g., app on 5 QMs). Builds the initial graph and annotates it with business metadata.</p>
+</div>
+
+<div class="card">
+<p style="font-size:14px;font-weight:500;margin-bottom:8px">Optimizer agent</p>
+<p style="font-size:13px;margin:0">Runs the 6-stage pipeline. Records a DecisionRecord for every transformation: stage, action, subject, from/to, reason, evidence, complexity_delta. This decision log is the backbone of explainability. Also handles Mode 2 (onboarding) — when a new app arrives, runs placement algorithm and generates setup.</p>
+</div>
+
+<div class="card">
+<p style="font-size:14px;font-weight:500;margin-bottom:8px">Conversational agent</p>
+<p style="font-size:13px;margin:0">The user-facing chatbot. Has the full graph + decision log in context. Handles queries, what-ifs, refinements, and explanations. Can modify the target topology based on user feedback and recompute complexity. Generates MQSC commands, design documents, and onboarding instructions on demand.</p>
+</div>
+
+<h2>Layer 3 — three user-facing modes</h2>
+
+<h3>Mode 1: optimize (batch transformation)</h3>
+<p>User uploads the as-is CSV (like the 20K-row dataset). The system processes it through all 6 pipeline stages and produces the target topology.</p>
+
+<div class="flow-step step-teal"><div class="step-num">1</div><div class="step-content"><strong>Upload CSV</strong> — Drag-and-drop or file picker. Preprocessor normalizes any CSV schema into the abstract model. Single flat table, multiple CSVs, whatever — the adapter handles it.</div></div>
+
+<div class="flow-step step-teal"><div class="step-num">2</div><div class="step-content"><strong>Inventory scan</strong> — System displays: X queue managers found, Y queues, Z apps, N constraint violations, M orphan objects. User reviews before proceeding. Side-by-side: as-is graph (force-directed) + summary metrics.</div></div>
+
+<div class="flow-step step-teal"><div class="step-num">3</div><div class="step-content"><strong>Run optimizer</strong> — Pipeline executes all 6 stages. Progress bar shows each stage. Complexity waterfall builds in real time. Decision log populates.</div></div>
+
+<div class="flow-step step-teal"><div class="step-num">4</div><div class="step-content"><strong>Review target</strong> — Side-by-side topology comparison. Target graph on right. Metrics show reduction. User can click any node/edge to see the decisions that affected it. Can switch to chat mode to ask questions or request refinements.</div></div>
+
+<div class="flow-step step-teal"><div class="step-num">5</div><div class="step-content"><strong>Export</strong> — Target CSV (same schema as input, automation-ready). Complexity report (PDF with waterfall). Design document (AI-generated). MQSC provisioning commands.</div></div>
+
+<h3>Mode 2: onboard new application</h3>
+<p>A new app needs to connect. Instead of a human architect spending days figuring out queue names and QM placement, the system does it in seconds.</p>
+
+<div class="flow-step step-purple"><div class="step-num">1</div><div class="step-content"><strong>User provides requirements</strong> — "App RISK_ENGINE (Consumer) needs to receive transaction data from app PPCSM (Producer)." Plus metadata: neighborhood (Wholesale Banking), hosting type (Private PaaS), PCI (No), TRTC (03= 4:01 to 11:59 Hours).</div></div>
+
+<div class="flow-step step-purple"><div class="step-num">2</div><div class="step-content"><strong>Placement algorithm runs</strong> — Where should RISK_ENGINE live?<br>
+• Option A: same QM as PPCSM (WL6ER2D) → local queues only, zero new channels, lowest complexity<br>
+• Option B: different QM in same community → 1 new spoke channel to hub<br>
+• Option C: different community → 1 new cross-community channel via hub-to-hub backbone<br>
+System recommends Option A with reasoning: "Same neighborhood, same hosting type, no PCI conflict, adds zero complexity."</div></div>
+
+<div class="flow-step step-purple"><div class="step-num">3</div><div class="step-content"><strong>Naming engine generates all objects</strong> —<br>
+Local queue: PPCSM.RISKENG.WBANK.TXN.DAT<br>
+No remote queue needed (same QM).<br>
+No channel needed (same QM).<br>
+Persistence: Yes (matches PPCSM's existing pattern).<br>
+TRTC: 03 (inherited from requirement).</div></div>
+
+<div class="flow-step step-purple"><div class="step-num">4</div><div class="step-content"><strong>Output setup instructions</strong> — Human-readable setup guide + MQSC commands + CSV rows to append to the target dataset. Complexity delta shown: "Adding RISK_ENGINE increases score by 2.0 (1 new queue, 1 new client). No structural change."</div></div>
+
+<div class="flow-step step-purple"><div class="step-num">5</div><div class="step-content"><strong>Graph updated</strong> — Target topology now includes RISK_ENGINE. All future queries and what-ifs reflect the updated state.</div></div>
+
+<h3>Mode 3: converse with topology</h3>
+<p>The most differentiated feature. The topology becomes a living thing you talk to. Here are the conversation categories the chatbot handles:</p>
+
+<div style="margin:1rem 0">
+<p style="font-size:14px;font-weight:500;margin-bottom:8px">Query conversations</p>
+<div class="chat-bubble chat-user">Where does app 8AFK live?</div>
+<div class="chat-bubble chat-ai">App 8AFK (Hdc - Hdxknvlr Kavk & Hncvympqf) is on QM WL6ER2D in the Wholesale Banking neighborhood. It has 3 local queues: ZEEWALA.ACK, ZEEWALA.DAT, and ARCNE.ACK. It communicates with app PPCSM (PP Arcne VMU) on the same QM — all local, no cross-QM channels needed.</div>
+</div>
+
+<div style="margin:1rem 0">
+<p style="font-size:14px;font-weight:500;margin-bottom:8px">What-if conversations</p>
+<div class="chat-bubble chat-user">What happens if we retire QM WL6EX2C?</div>
+<div class="chat-bubble chat-ai">Retiring WL6EX2C impacts 2 apps (8A, OK) and 2 remote queues. Here's the migration plan:<br><br>
+App 8A (DFCeth, Producer) → migrate to WQ26. Create local queue on WQ26 for direct PUT. Remove remote queue + xmit queue from WL6EX2C. Delete channel WL6EX2C.TO.WQ26.<br><br>
+Net impact: -1 QM, -2 remote queues, -1 xmit queue, -1 channel pair. Complexity delta: -18.4. Want me to apply this change?</div>
+</div>
+
+<div style="margin:1rem 0">
+<p style="font-size:14px;font-weight:500;margin-bottom:8px">Refinement conversations</p>
+<div class="chat-bubble chat-user">I don't want RISK_ENGINE on WL6ER2D. Put it on WQ26 instead.</div>
+<div class="chat-bubble chat-ai">Moving RISK_ENGINE to WQ26 means it's in a different community than its producer (PPCSM on WL6ER2D). I'll need to create:<br><br>
+• Remote queue on WQ26: PPCSM.RISKENG.WBANK.TXN.DAT<br>
+• XMIT queue: RISKENG.WL6ER2D<br>
+• Channel pair: WL6ER2D.TO.WQ26 (already exists), WQ26.FROM.WL6ER2D<br><br>
+Complexity increases by 8.6 vs the same-QM placement. The tradeoff: you get network isolation between producer and consumer. Proceed?</div>
+</div>
+
+<div style="margin:1rem 0">
+<p style="font-size:14px;font-weight:500;margin-bottom:8px">Explain conversations</p>
+<div class="chat-bubble chat-user">Why did you pick WL6ER2D as the hub for Wholesale Banking?</div>
+<div class="chat-bubble chat-ai">Three reasons:<br><br>
+1. Highest betweenness centrality (0.42) in the community — it's already the natural routing center for 8 spoke QMs.<br>
+2. Hosts 2 PCI-compliant payment flows with TRTC 00 (0-30 min recovery) — hub needs to be the most reliable node.<br>
+3. Private PaaS hosting — better capacity headroom than the Mainframe-hosted alternatives.<br><br>
+The next candidate was WL6ER2F with centrality 0.31, but it only hosts non-PCI flows.</div>
+</div>
+
+<div style="margin:1rem 0">
+<p style="font-size:14px;font-weight:500;margin-bottom:8px">Generate conversations</p>
+<div class="chat-bubble chat-user">Give me the MQSC commands to set up the RISK_ENGINE connection</div>
+<div class="chat-bubble chat-ai">Here are the MQSC commands for QM WL6ER2D:<br><br>
+DEFINE QLOCAL('PPCSM.RISKENG.WBANK.TXN.DAT') +<br>
+&nbsp;&nbsp;DEFPSIST(YES) PUT(ENABLED) GET(ENABLED) +<br>
+&nbsp;&nbsp;DESCR('PPCSM to RISK_ENGINE txn data') +<br>
+&nbsp;&nbsp;CLUSTER('WBANK')<br><br>
+No remote queues, xmit queues, or channels needed — both apps are on the same QM.</div>
+</div>
+
+<h2>Dashboard design</h2>
+
+<p>Four tabs across the top, consistent across all modes:</p>
+
+<div class="tab-strip">
+<div class="tab-item active">Overview</div>
+<div class="tab-item">Topology explorer</div>
+<div class="tab-item">Onboard app</div>
+<div class="tab-item">Chat</div>
+</div>
+
+<div class="card">
+<p style="font-size:14px;font-weight:500;margin-bottom:8px">Tab 1: overview</p>
+<p style="font-size:13px;margin:0">Metric cards (QMs, channels, apps, complexity score with delta). Complexity waterfall chart (score reduction by pipeline stage). Decision log stream (searchable, filterable by stage/action). As-is vs target summary.</p>
+</div>
+
+<div class="card">
+<p style="font-size:14px;font-weight:500;margin-bottom:8px">Tab 2: topology explorer</p>
+<p style="font-size:13px;margin:0">Side-by-side D3 force-directed graphs. Left = as-is (hairball), right = target (hub-spoke). Nodes colored by community (Louvain cluster). Click any node to see its queues, apps, channels. Click any edge to see the channel details. Toggle: show/hide orphans, show/hide aliases. Zoom, pan, filter by neighborhood.</p>
+</div>
+
+<div class="card">
+<p style="font-size:14px;font-weight:500;margin-bottom:8px">Tab 3: onboard app</p>
+<p style="font-size:13px;margin:0">Guided form: new app name, role (producer/consumer), target app to connect to, neighborhood, hosting type, PCI flag, TRTC class. Submit → placement recommendation with options (same QM / same community / different community). Accept → naming engine generates all objects. Output: setup instructions + MQSC commands + CSV rows.</p>
+</div>
+
+<div class="card">
+<p style="font-size:14px;font-weight:500;margin-bottom:8px">Tab 4: chat</p>
+<p style="font-size:13px;margin:0">Full-screen chat interface. The AI agent has the complete graph in context. Supports all conversation types: query, what-if, refinement, explanation, generation. Every what-if and refinement updates the graph in real time. The topology explorer reflects changes immediately.</p>
+</div>
+
+<h2>Technology stack</h2>
+
+<div class="cols-2">
+<div class="card">
+<p style="font-size:14px;font-weight:500;margin-bottom:8px">Backend (Python)</p>
+<p style="font-size:13px;margin:0;line-height:1.8">
+NetworkX + python-louvain — graph algorithms<br>
+Pandas — CSV preprocessing<br>
+FastAPI — REST + WebSocket API<br>
+Claude API (Sonnet 4) — AI agents<br>
+Pydantic — data model validation
+</p>
+</div>
+<div class="card">
+<p style="font-size:14px;font-weight:500;margin-bottom:8px">Frontend (React)</p>
+<p style="font-size:13px;margin:0;line-height:1.8">
+D3.js — force-directed topology graphs<br>
+Recharts — waterfall + metric charts<br>
+React — component framework<br>
+Tailwind — styling<br>
+WebSocket — real-time chat
+</p>
+</div>
+</div>
+
+<h2>Deliverables (per hackathon requirements)</h2>
+
+<div class="metric-grid" style="grid-template-columns:repeat(2,minmax(0,1fr))">
+<div class="metric"><p class="metric-label">Deliverable 1</p><p class="metric-val" style="font-size:14px">Target CSV</p><p style="font-size:12px;color:var(--color-text-secondary,#666);margin-top:2px">Same schema as input. Automation-ready. Generated by pipeline + naming engine.</p></div>
+<div class="metric"><p class="metric-label">Deliverable 2</p><p class="metric-val" style="font-size:14px">Complexity report</p><p style="font-size:12px;color:var(--color-text-secondary,#666);margin-top:2px">Weighted formula. Waterfall per stage. As-is vs target with percentage reduction.</p></div>
+<div class="metric"><p class="metric-label">Deliverable 3</p><p class="metric-val" style="font-size:14px">Topology visualizations</p><p style="font-size:12px;color:var(--color-text-secondary,#666);margin-top:2px">Interactive D3 force-directed. Side-by-side as-is vs target. Community coloring.</p></div>
+<div class="metric"><p class="metric-label">Deliverable 4</p><p class="metric-val" style="font-size:14px">Design document</p><p style="font-size:12px;color:var(--color-text-secondary,#666);margin-top:2px">AI-generated from decision log. Every choice justified with evidence and metrics.</p></div>
+</div>
+
+<h2>Demo script (40 seconds)</h2>
+
+<div class="flow-step step-coral"><div class="step-num">1</div><div class="step-content"><strong>Upload + optimize</strong> (15s) — Drop the 20K-row CSV. Watch the force-directed graph transform from hairball to hub-spoke. Waterfall shows 62% complexity reduction.</div></div>
+
+<div class="flow-step step-coral"><div class="step-num">2</div><div class="step-content"><strong>Onboard a new app</strong> (10s) — "Add RISK_ENGINE consuming from PPCSM." Instant placement recommendation + generated queue names + MQSC commands.</div></div>
+
+<div class="flow-step step-coral"><div class="step-num">3</div><div class="step-content"><strong>What-if query</strong> (10s) — "What if we retire QM_LEGACY_07?" Impact analysis with migration plan and complexity delta.</div></div>
+
+<div class="flow-step step-coral"><div class="step-num">4</div><div class="step-content"><strong>Explain decision</strong> (5s) — "Why this hub?" AI answers with betweenness centrality + PCI + TRTC evidence. Judges see rigorous reasoning, not handwaving.</div></div>
+
+<h2>The pitch (30 seconds)</h2>
+
+<div class="card card-accent">
+<p style="font-size:14px;margin:0;line-height:1.8">"Enterprise MQ topologies are graphs. TopologyIQ treats them as graphs. We optimize with Louvain clustering and centrality algorithms, reducing a 20K-row hairball to a clean hub-spoke topology with 62% lower complexity. But we're not just an optimizer — we're a platform. New app needs to connect? Auto-generated queue names and placement in seconds. Want to understand a decision? Chat with your topology and get explainable answers. Same engine works for Kafka or RabbitMQ tomorrow. Just swap the adapter."</p>
+</div>
+
+</div>
