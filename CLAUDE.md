@@ -29,7 +29,12 @@ Rethink how MQ environments are designed and managed. Demonstrate how legacy MQ 
 A single flat denormalized CSV file (can be 20K+ rows). Each row represents a queue-to-application relationship with all metadata embedded. **This is NOT multiple separate CSVs — it's one wide table.**
 
 ### Core Constraints (MUST be enforced — violations = invalid solution)
-1. **Exactly one queue manager per application** (1 QM per AppID). Applications connect only to their own queue manager.
+1. **Exactly one queue manager per application — BIDIRECTIONAL** (1 QM per AppID AND 1 App per QM). 
+   - FORWARD: Each application connects to exactly ONE queue manager (no app scattered across multiple QMs)
+   - REVERSE: Each queue manager is DEDICATED to exactly ONE application (no QM shared by multiple apps)
+   - "Applications connect only to THEIR OWN queue manager" means DEDICATED/EXCLUSIVE.
+   - If 2 apps share a QM today (communicating via local queues), in the target state they MUST each get their own dedicated QM and communicate via remote queues + channels instead.
+   - THIS IS THE MOST IMPORTANT CONSTRAINT. It drives the entire target state transformation. At scale (20K rows), most QMs will be shared by multiple apps — splitting them creates more QMs, and hub-spoke keeps the resulting channels manageable.
 2. **Producers write to a Local Queue with remote queue attribute** (called "remoteQ") within their own QM. The remoteQ leverages a transmission queue ("xmitq") to send messages via server channels to another QM.
 3. **Queue managers communicate via sender/receiver channels.** Channels have deterministic naming pairs (fromQM.toQM / toQM.fromQM). **Channels do NOT exist in the input data — teams must infer and introduce them.**
 4. **Consumers read from local queues.** These local queues receive data from their channel.
@@ -104,6 +109,7 @@ AC - Neighborhood               → "Mainframe" or "Wholesale Banking"
 4. **Alias queues** (q_type="Alias") have remote_q_mgr_name populated but NOT xmit_q_name — they resolve locally.
 5. **Column G ("Primary Application")** contains "Remote", "Local", "Remote;Alias" — this is the ROLE-specific queue type, which can differ from column O (q_type). A single Discrete Queue Name can appear in multiple rows with different roles.
 6. **Each row is NOT a unique queue** — the same queue appears once for the producer relationship and once for the consumer relationship. Must deduplicate.
+7. **CRITICAL: QM WL6ER2D is shared by apps PPCSM and 8AFK** — this is a CONSTRAINT VIOLATION. The target state must split this into two dedicated QMs. This is the MOST COMMON violation pattern you'll see in the 20K-row dataset. The "1 QM per app" constraint is BIDIRECTIONAL: no app on multiple QMs AND no QM shared by multiple apps.
 
 ### Sample data flows reconstructed
 
@@ -119,14 +125,29 @@ DFCeth (app_id=8A, Producer, Mainframe)
   → OOIKN JIU (app_id=OK, Consumer, Core Banking) GETs from WQ26
 ```
 
-**Flow 2: Local messaging (Wholesale Banking)**
+**Flow 2: Local messaging on SHARED QM — CONSTRAINT VIOLATION (Wholesale Banking)**
 ```
+AS-IS (VIOLATION — two apps sharing one QM):
 Hdc - Hdxknvlr (app_id=8AFK, Producer+Consumer, Wholesale Banking)
 PP Arcne VMU (app_id=PPCSM, Producer+Consumer, Wholesale Banking)
   → both connect to QM WL6ER2D
   → communicate via local queues: ZEEWALA.ACK, ZEEWALA.DAT, ARCNE.ACK
-  → no remote queues, no xmit queues, no cross-QM channels needed
-  → ALREADY CLEAN — no optimization needed here
+  → THIS VIOLATES "1 QM per app" — two apps share WL6ER2D
+
+TARGET (after Stage 1 split):
+8AFK (primary — most ports) KEEPS original QM WL6ER2D:
+  → 8AFK reads from local queue (arrived via channel from WL6ER2D_PPCSM)
+  → 8AFK writes to local queue → remote queue → xmit queue → channel to WL6ER2D_PPCSM
+
+WL6ER2D_PPCSM (new, dedicated to PPCSM):
+  → PPCSM writes to local queue → remote queue → xmit queue → channel to WL6ER2D
+  → PPCSM reads from local queue (arrived via channel from WL6ER2D)
+
+Channels created:
+  WL6ER2D.TO.WL6ER2D_PPCSM (sender) + WL6ER2D_PPCSM.FROM.WL6ER2D (receiver)
+  WL6ER2D_PPCSM.TO.WL6ER2D (sender) + WL6ER2D.FROM.WL6ER2D_PPCSM (receiver)
+
+Original QM WL6ER2D: KEPT (reused by primary app 8AFK)
 ```
 
 ---
@@ -288,14 +309,75 @@ The constraint says "1 QM per app." But in the flat CSV, an app_id can appear on
 4. Build the initial as-is graph
 5. Record discovery findings in decision log
 
-### Stage 1: Constraint Enforcement [REVISED — refined after data analysis]
-**Purpose:** Enforce 1-QM-per-app rule.
-**Logic:**
+### Stage 1: Constraint Enforcement [CRITICAL — REWRITTEN after design review]
+**Purpose:** Enforce the BIDIRECTIONAL 1-QM-per-app rule.
+
+**THE CONSTRAINT IS BIDIRECTIONAL:**
+- Forward: Each app connects to exactly ONE QM (no app scattered across multiple QMs)
+- Reverse: Each QM is DEDICATED to exactly ONE app (no QM shared by multiple apps)
+- "Applications connect only to THEIR OWN queue manager" means DEDICATED, not shared.
+- This means: if 2 apps share a QM today (local communication), in the target state they each get their OWN QM and communicate via remote queues + channels.
+
+**This is the MOST IMPORTANT constraint. Violations include:**
+- App on multiple QMs (forward violation) — needs consolidation
+- Multiple apps on one QM (reverse violation) — needs QM SPLIT
+- The reverse violation is the more common one in legacy topologies and the one that drives most of the target state transformation.
+
+**Stage 1a — Split shared QMs (reverse constraint):**
+1. For each QM, count distinct app_ids connected to it
+2. If a QM has > 1 app_id → it must be SPLIT
+3. Elect **primary app** = the one with the most connected ports (non-alias). Primary app **keeps the original QM**.
+4. For each **secondary app** on the shared QM:
+   a. Create a new dedicated QM. Naming: `{ORIGINAL_QM}_{APP_ID}`, e.g., `WL6ER2D_PPCSM`.
+   b. Move secondary app's exclusive queues to the new QM
+   c. What was previously LOCAL communication between co-located apps now becomes CROSS-QM communication:
+      - On each side: create a REMOTE queue pointing to the other QM
+      - On each side: create a XMIT queue (PortDirection.TRANSMISSION) for the other QM
+      - Create a sender/receiver channel pair between original QM and new QM
+      - Local queues on each side receive data via the channel
+   d. Record each split as a DecisionRecord: reason="QM shared by multiple apps, constraint requires 1 QM per app", evidence={primary_app, moved_app, shared_queues, ...}
+5. Original QM is **kept** (reused by primary app) — no orphan QMs created
+
+**Stage 1b — Consolidate scattered apps (forward constraint):**
 1. Group clients by app_id
-2. For each app on multiple QMs, determine actual connectivity (see adapter logic above)
+2. For each app on multiple QMs, determine actual connectivity (see adapter logic)
 3. Elect home QM: the QM where app has primary role + most non-alias queues
 4. Migrate: update client.home_node_id, recreate queues on home QM, remove from non-home QMs
 5. Record each migration as a DecisionRecord with reason + evidence
+
+**EXAMPLE from sample data:**
+```
+AS-IS: WL6ER2D hosts both PPCSM and 8AFK (VIOLATION — shared QM)
+  WL6ER2D
+    ├── PPCSM writes to ZEEWALA.ACK (local)
+    ├── 8AFK reads from ZEEWALA.ACK (local)
+    ├── 8AFK writes to ARCNE.ACK (local)
+    └── PPCSM reads from ARCNE.ACK (local)
+
+TARGET: Primary app keeps original QM, secondary gets new QM
+  WL6ER2D (original QM, kept by primary app 8AFK)
+    ├── 8AFK reads from local queue (receives via channel from WL6ER2D_PPCSM)
+    ├── 8AFK writes to local queue → remote queue → xmit queue → channel to WL6ER2D_PPCSM
+    └── existing edges to other QMs (e.g., WQ26) stay intact
+
+  WL6ER2D_PPCSM (new, dedicated to PPCSM)
+    ├── PPCSM writes to local queue → remote queue → xmit queue → channel to WL6ER2D
+    └── PPCSM reads from local queue (receives via channel from WL6ER2D)
+
+  Channels:
+    WL6ER2D.TO.WL6ER2D_PPCSM (sender) + WL6ER2D_PPCSM.FROM.WL6ER2D (receiver)
+    WL6ER2D_PPCSM.TO.WL6ER2D (sender) + WL6ER2D.FROM.WL6ER2D_PPCSM (receiver)
+```
+
+**WHY THIS MATTERS AT SCALE:**
+- 20K rows likely has many QMs shared by 5-10 apps each
+- Splitting creates MORE QMs but each is clean and dedicated
+- Primary app keeps the original QM (preserves existing edges, no orphans)
+- Only secondary apps get new QMs — minimizes churn
+- This is where Louvain + hub-spoke (Stage 3-4) becomes ESSENTIAL
+- Without hub-spoke, the split would create N² channels between all the new QMs
+- Hub-spoke keeps the channel count at O(N) instead of O(N²)
+- The optimization narrative: "We split for correctness, then optimize for efficiency"
 
 ### Stage 2: Dead Object Pruning
 **Purpose:** Remove unused MQ objects.
@@ -332,13 +414,17 @@ The constraint says "1 QM per app." But in the flat CSV, an app_id can appear on
 ### Stage 5: Queue + Channel Rationalization
 **Purpose:** Standardize naming, wire the complete message path.
 **Logic:**
-1. For each message flow (producer → consumer):
-   a. If same QM: local queue only, no remote/xmit/channel needed
-   b. If different QM, same community: producer QM → hub → consumer QM
-      - Producer's QM: remote queue → xmit queue → sender channel to hub
-      - Hub: receiver channel from producer QM → local queue → remote queue → xmit queue → sender channel to consumer QM
-      - Consumer's QM: receiver channel from hub → local queue
-   c. If different community: producer QM → producer hub → consumer hub → consumer QM
+After Stage 1 (split), every app has its own dedicated QM. Therefore ALL inter-app communication is cross-QM. The "same QM local queue" case ONLY applies to an app producing and consuming its own messages (self-loop, rare).
+
+1. For each message flow (producer app → consumer app):
+   a. Producer and consumer are ALWAYS on different QMs (because 1 QM per app)
+   b. If both QMs are in the same community:
+      - Producer's QM: local queue (app writes here) → remote queue → xmit queue → sender channel to hub
+      - Hub QM: receiver channel → forwarding logic → sender channel to consumer's QM
+      - Consumer's QM: receiver channel → local queue (app reads here)
+   c. If QMs are in different communities:
+      - Producer QM → producer's hub → [backbone channel] → consumer's hub → consumer QM
+   d. Direct spoke-to-spoke: if two apps communicate heavily and are in the same community, a direct channel MAY be more efficient than routing through the hub. Record the tradeoff in decision log.
 2. Apply naming engine to all generated objects
 3. Decide alias retention: keep aliases only if they serve an active routing purpose (explainer justifies)
 4. Generate target CSV in same schema as input
@@ -486,11 +572,11 @@ The decision log is:
 ### Mode 2: Onboard New Application
 **User flow:**
 1. User fills form: app name, role (producer/consumer), target app to connect to, neighborhood, hosting type, PCI flag, TRTC class
-2. Placement algorithm runs against CURRENT target topology:
-   - Option A: same QM as target app → simplest, local only
-   - Option B: different QM, same community → 1 spoke channel via hub
-   - Option C: different community → cross-community via hub-to-hub
-   - Recommendation based on: neighborhood match, PCI compatibility, QM capacity, complexity delta
+2. Placement algorithm runs against CURRENT target topology. New app ALWAYS gets its own dedicated QM (constraint: 1 app = 1 QM). The question is where to place it:
+   - Option A: join same community as target app → spoke channel to hub, hub routes to target → lowest complexity
+   - Option B: join different community matching new app's neighborhood → needs hub-to-hub backbone channel
+   - Option C: direct channel to target app's QM → bypasses hub, simpler but adds non-standard channel
+   - Recommendation based on: neighborhood match, PCI compatibility, community size, complexity delta
 3. Naming engine generates all MQ objects (queues, channels, xmit queues)
 4. Output: human-readable setup guide + MQSC commands + CSV rows to append
 5. Complexity delta displayed: "Adding this app increases score by X"
@@ -500,28 +586,40 @@ The decision log is:
 **Placement algorithm detail:**
 ```python
 def recommend_placement(new_app, target_app, target_topology):
+    # CRITICAL: New app ALWAYS gets its own dedicated QM (1 app = 1 QM constraint)
+    # The question is: which community should the new QM join?
+    
     # 1. Where does target_app live?
     target_qm = target_topology.get_home_qm(target_app)
     target_community = target_topology.get_community(target_qm)
     
-    # 2. Score each option
+    # 2. Create new dedicated QM for the new app
+    new_qm = create_dedicated_qm(new_app)  # e.g., QM_RISK_ENGINE
+    
+    # 3. Score placement options (which community to join)
     options = []
     
-    # Option A: Same QM
-    delta_a = score_delta_same_qm(new_app, target_qm)  # Usually lowest
-    options.append(("same_qm", target_qm, delta_a))
+    # Option A: Join same community as target app
+    # New QM becomes a spoke in target's community, connects via hub
+    # 1 channel pair to hub, hub routes to target app's QM
+    delta_a = score_delta_same_community(new_qm, target_community)
+    options.append(("same_community", target_community, delta_a,
+                    "Lowest complexity — routes through existing hub"))
     
-    # Option B: Different QM, same community
-    for qm in target_community.members:
-        if qm != target_qm:
-            delta_b = score_delta_diff_qm_same_community(new_app, qm, target_qm)
-            options.append(("same_community", qm, delta_b))
+    # Option B: Join a different community (if neighborhood mismatch)
+    # New QM joins the community matching its neighborhood
+    # Needs cross-community hub-to-hub channel
+    if new_app.neighborhood != target_community.neighborhood:
+        matching_community = find_community_for_neighborhood(new_app.neighborhood)
+        delta_b = score_delta_cross_community(new_qm, matching_community, target_community)
+        options.append(("neighborhood_match", matching_community, delta_b,
+                        "Matches neighborhood but needs hub-to-hub routing"))
     
-    # Option C: Different community (if neighborhood mismatch)
-    if new_app.neighborhood != target_qm.neighborhood:
-        best_qm = find_best_qm_in_neighborhood(new_app.neighborhood)
-        delta_c = score_delta_cross_community(new_app, best_qm, target_qm)
-        options.append(("cross_community", best_qm, delta_c))
+    # Option C: Direct channel to target (skip hub)
+    # Only if traffic volume justifies bypassing hub
+    delta_c = score_delta_direct_channel(new_qm, target_qm)
+    options.append(("direct_channel", None, delta_c,
+                    "Direct spoke-to-spoke — simpler but adds a non-hub channel"))
     
     # Rank by complexity delta (lowest = best)
     return sorted(options, key=lambda x: x[2])
@@ -784,7 +882,7 @@ topologyiq/
 24. `TopologyExplorer.jsx` — Side-by-side topology view
 25. `OnboardApp.jsx` — Guided form
 26. `Chat.jsx` — Chat interface
-    
+
 ### Phase 5: Integration + Polish
 27. Wire frontend to backend API
 28. Test with sample data
@@ -816,13 +914,16 @@ topologyiq/
 
 ## IMPORTANT EDGE CASES TO HANDLE
 
-1. **Apps that are both producer AND consumer** — e.g., 8AFK is both producer and consumer on WL6ER2D. The client should have a combined role or two separate client entries.
+1. **Apps that are both producer AND consumer** — e.g., 8AFK is both producer and consumer on WL6ER2D. The client should have a combined role or two separate client entries. After QM split, the app still has both roles on its dedicated QM.
 2. **Queue type "Remote;Alias"** — Column G shows this. A queue can serve as both remote and alias. Handle in PortDirection or as metadata.
 3. **Empty/zero values in remote columns** — remote_q_mgr_name can be empty, "0", or blank. All mean "not a remote queue."
 4. **Cluster columns** — All "7" in sample data. Might have real cluster info in full dataset. Use as TopologyNode metadata.
 5. **Multiple queue names for same flow** — e.g., RQST and XA21 variants. These are the same logical flow, different physical objects. Group them.
-6. **Circular flows** — App A → App B and App B → App A. These create cycles. The optimizer should handle cycles correctly (don't break bidirectional communication).
-7. **PCI isolation** — PCI apps might need to stay on dedicated QMs. Respect this during placement.
+6. **Circular flows** — App A → App B and App B → App A. These create bidirectional channels. The optimizer should handle cycles correctly (don't break bidirectional communication). After QM split, both directions need their own channel pairs.
+7. **PCI isolation** — PCI apps might need to stay on dedicated QMs. Since every app gets its own QM after split, PCI isolation is naturally achieved. But the HUB QM for a PCI community should also be PCI-compliant.
 8. **Scale** — 20K rows. All algorithms must work efficiently. NetworkX handles this fine. Pandas handles CSV parsing. UI needs pagination for decision log.
 9. **Idempotency** — Running the optimizer twice on the same input should produce the same output.
 10. **Export fidelity** — Target CSV must have EXACTLY the same columns as input CSV. No missing columns, no extra columns, no schema changes.
+11. **QM split creates channel explosion** — If a QM has 10 apps, primary keeps the original QM and 9 secondary apps get new QMs. If all 10 communicated locally before, they now need up to 9*10=90 channel pairs. THIS IS WHY HUB-SPOKE IS ESSENTIAL. Without it, the split makes things worse. The pipeline narrative: "Split for correctness (Stage 1), then optimize for efficiency (Stages 3-4)."
+12. **QM naming after split** — Primary app keeps the original QM name. Secondary apps get `{ORIGINAL_QM}_{APP_ID}` (e.g., `WL6ER2D_PPCSM`). Deterministic and non-conflicting.
+13. **Hub QMs are infrastructure, not app-owned** — Hub QMs introduced in Stage 4 don't belong to any app. They are pure routing infrastructure. No app connects directly to a hub. Messages pass through via channels. This means hub QMs are an EXCEPTION to the "1 app per QM" rule — they have ZERO apps, they just route.
