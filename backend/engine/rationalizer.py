@@ -39,41 +39,38 @@ class Rationalizer:
         """
         flows = []
 
-        # Build app_id → client mapping
-        app_clients: Dict[str, TopologyClient] = {}
+        # Build lookup maps to avoid O(N²) nested loops
+        node_producers: Dict[str, List[TopologyClient]] = {}
+        node_consumers: Dict[str, List[TopologyClient]] = {}
         for client in model.clients.values():
-            app_clients[client.app_id] = client
+            if client.role in (ClientRole.PRODUCER, ClientRole.BOTH):
+                node_producers.setdefault(client.home_node_id, []).append(client)
+            if client.role in (ClientRole.CONSUMER, ClientRole.BOTH):
+                node_consumers.setdefault(client.home_node_id, []).append(client)
+
+        # Build port ownership: port_id → client (for fast lookup)
+        port_owner: Dict[str, TopologyClient] = {}
+        for client in model.clients.values():
+            for pid in client.connected_ports:
+                port_owner[pid] = client
 
         # Scan remote ports: a remote port on producer's QM targeting consumer's QM
         for port in model.ports.values():
-            if port.direction != PortDirection.REMOTE:
-                continue
-            if not port.remote_node_id:
+            if port.direction != PortDirection.REMOTE or not port.remote_node_id:
                 continue
 
-            # Find the producer (client on this port's node)
-            producer = None
-            for client in model.clients.values():
-                if (
-                    client.home_node_id == port.node_id
-                    and client.role in (ClientRole.PRODUCER, ClientRole.BOTH)
-                    and port.id in client.connected_ports
-                ):
-                    producer = client
-                    break
-
+            # Find the producer: owner of this port who is a producer on this node
+            producer = port_owner.get(port.id)
+            if not producer or producer.role not in (ClientRole.PRODUCER, ClientRole.BOTH):
+                # Fallback: any producer on this node
+                candidates = node_producers.get(port.node_id, [])
+                producer = candidates[0] if candidates else None
             if not producer:
                 continue
 
             # Find the consumer on the remote QM
-            consumer = None
-            for client in model.clients.values():
-                if (
-                    client.home_node_id == port.remote_node_id
-                    and client.role in (ClientRole.CONSUMER, ClientRole.BOTH)
-                ):
-                    consumer = client
-                    break
+            consumers = node_consumers.get(port.remote_node_id, [])
+            consumer = consumers[0] if consumers else None
 
             if consumer and producer.id != consumer.id:
                 flows.append((producer, consumer, port.name))

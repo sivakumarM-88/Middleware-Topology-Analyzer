@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -23,6 +24,11 @@ WEIGHTS = {
     "cross_community": 4.0,
     "density": 20.0,
 }
+
+# Scale thresholds — switch to sampled algorithms above these
+_SAMPLE_PATH_THRESHOLD = 200   # nodes: sample path lengths instead of all-pairs
+_SAMPLE_PATH_COUNT = 100       # number of random source nodes to sample
+_CYCLE_LIMIT = 500             # max cycles to enumerate before stopping
 
 
 @dataclass
@@ -93,47 +99,13 @@ class ComplexityScorer:
             m.max_fan_out = max(out_degrees) if out_degrees else 0
             m.max_fan_in = max(in_degrees) if in_degrees else 0
 
-        # Path length (use undirected for connectedness)
-        if ug.number_of_nodes() > 1 and nx.is_connected(ug):
-            m.avg_path_length = nx.average_shortest_path_length(ug)
-            all_paths = dict(nx.all_pairs_shortest_path_length(ug))
-            m.max_path_length = max(
-                length
-                for targets in all_paths.values()
-                for length in targets.values()
-            )
-        elif ug.number_of_nodes() > 1:
-            # For disconnected graphs, compute per-component and take weighted avg
-            components = list(nx.connected_components(ug))
-            total_path = 0.0
-            total_pairs = 0
-            max_pl = 0
-            for comp in components:
-                if len(comp) < 2:
-                    continue
-                sub = ug.subgraph(comp)
-                apl = nx.average_shortest_path_length(sub)
-                n_pairs = len(comp) * (len(comp) - 1)
-                total_path += apl * n_pairs
-                total_pairs += n_pairs
-                all_paths = dict(nx.all_pairs_shortest_path_length(sub))
-                comp_max = max(
-                    length
-                    for targets in all_paths.values()
-                    for length in targets.values()
-                )
-                max_pl = max(max_pl, comp_max)
-            m.avg_path_length = total_path / total_pairs if total_pairs > 0 else 0.0
-            m.max_path_length = max_pl
+        # Path lengths — use sampling for large graphs to avoid O(N³)
+        self._compute_path_metrics(ug, m)
 
-        # Cycles (directed)
-        try:
-            cycles = list(nx.simple_cycles(g))
-            m.cycle_count = len(cycles)
-        except Exception:
-            m.cycle_count = 0
+        # Cycles (directed) — cap enumeration to avoid hanging on dense graphs
+        m.cycle_count = self._count_cycles(g)
 
-        # Orphan nodes: QMs with no clients
+        # Orphan nodes: QMs with no clients and no channels
         client_nodes = {c.home_node_id for c in model.clients.values()}
         edge_nodes = set()
         for e in model.edges.values():
@@ -184,3 +156,85 @@ class ComplexityScorer:
         )
 
         return m
+
+    # ── Path length computation ────────────────────────────────────────────
+
+    def _compute_path_metrics(self, ug: nx.Graph, m: ComplexityMetrics) -> None:
+        """Compute avg and max path length, using sampling for large graphs."""
+        n_nodes = ug.number_of_nodes()
+        if n_nodes < 2:
+            return
+
+        if nx.is_connected(ug):
+            self._path_metrics_for_graph(ug, m)
+        else:
+            # Disconnected: weighted average across components
+            components = list(nx.connected_components(ug))
+            total_path = 0.0
+            total_pairs = 0
+            max_pl = 0
+            for comp in components:
+                if len(comp) < 2:
+                    continue
+                sub = ug.subgraph(comp)
+                sub_m = ComplexityMetrics()
+                self._path_metrics_for_graph(sub, sub_m)
+                n_pairs = len(comp) * (len(comp) - 1)
+                total_path += sub_m.avg_path_length * n_pairs
+                total_pairs += n_pairs
+                max_pl = max(max_pl, sub_m.max_path_length)
+            m.avg_path_length = total_path / total_pairs if total_pairs > 0 else 0.0
+            m.max_path_length = max_pl
+
+    def _path_metrics_for_graph(self, g: nx.Graph, m: ComplexityMetrics) -> None:
+        """Compute path metrics for a single connected graph."""
+        n = g.number_of_nodes()
+        if n < 2:
+            return
+
+        if n <= _SAMPLE_PATH_THRESHOLD:
+            # Small graph: exact computation is fine
+            m.avg_path_length = nx.average_shortest_path_length(g)
+            all_paths = dict(nx.all_pairs_shortest_path_length(g))
+            m.max_path_length = max(
+                length
+                for targets in all_paths.values()
+                for length in targets.values()
+            )
+        else:
+            # Large graph: SAMPLE to avoid O(N³)
+            # avg_path_length via nx (uses BFS from each node = O(V*(V+E)),
+            # still expensive) — sample instead
+            nodes_list = list(g.nodes())
+            sample_size = min(_SAMPLE_PATH_COUNT, n)
+            sample_nodes = random.sample(nodes_list, sample_size)
+
+            total_length = 0
+            total_pairs = 0
+            max_pl = 0
+
+            for src in sample_nodes:
+                lengths = nx.single_source_shortest_path_length(g, src)
+                for tgt, dist in lengths.items():
+                    if tgt != src:
+                        total_length += dist
+                        total_pairs += 1
+                        max_pl = max(max_pl, dist)
+
+            m.avg_path_length = total_length / total_pairs if total_pairs > 0 else 0.0
+            m.max_path_length = max_pl
+
+    # ── Cycle counting ─────────────────────────────────────────────────────
+
+    @staticmethod
+    def _count_cycles(g: nx.DiGraph) -> int:
+        """Count cycles with a cap to avoid hanging on dense graphs."""
+        try:
+            count = 0
+            for _ in nx.simple_cycles(g):
+                count += 1
+                if count >= _CYCLE_LIMIT:
+                    break
+            return count
+        except Exception:
+            return 0

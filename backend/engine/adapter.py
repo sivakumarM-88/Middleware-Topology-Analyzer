@@ -118,19 +118,17 @@ class MQAdapter:
             if not qm_name:
                 continue
 
-            # Aggregate business metadata across all rows for this QM
-            pci_count = sum(
-                1 for _, r in group.iterrows()
-                if _clean_str(r.get(COL_PCI, "")).lower() == "yes"
-            )
-            critical_count = sum(
-                1 for _, r in group.iterrows()
-                if _clean_str(r.get(COL_CRITICAL_PAYMENT, "")).lower() == "yes"
-            )
+            # Single pass: aggregate all business metadata at once
+            pci_count = 0
+            critical_count = 0
             neighborhoods = set()
             lobs = set()
             trtcs = set()
             for _, r in group.iterrows():
+                if _clean_str(r.get(COL_PCI, "")).lower() == "yes":
+                    pci_count += 1
+                if _clean_str(r.get(COL_CRITICAL_PAYMENT, "")).lower() == "yes":
+                    critical_count += 1
                 n = _clean_str(r.get(COL_NEIGHBORHOOD, ""))
                 if n:
                     neighborhoods.add(n)
@@ -257,7 +255,7 @@ class MQAdapter:
                     "remote_count": 0,
                     "alias_count": 0,
                     "roles": set(),
-                    "ports": [],
+                    "ports": set(),
                     "metadata": {},
                 }
 
@@ -277,8 +275,7 @@ class MQAdapter:
 
             if role_str:
                 entry["roles"].add(role_str.lower())
-            if port_id not in entry["ports"]:
-                entry["ports"].append(port_id)
+            entry["ports"].add(port_id)
 
             # Capture latest business metadata
             entry["metadata"] = {
@@ -306,10 +303,10 @@ class MQAdapter:
 
             # Determine role
             all_roles: Set[str] = set()
-            all_ports: List[str] = []
+            all_ports: Set[str] = set()
             for qm_info in qm_map.values():
                 all_roles.update(qm_info["roles"])
-                all_ports.extend(qm_info["ports"])
+                all_ports.update(qm_info["ports"])
 
             if "producer" in all_roles and "consumer" in all_roles:
                 role = ClientRole.BOTH
@@ -329,7 +326,7 @@ class MQAdapter:
                 app_name=app_names.get(app_id, app_id),
                 home_node_id=best_qm,
                 role=role,
-                connected_ports=list(set(all_ports)),
+                connected_ports=sorted(all_ports),
                 business_metadata=metadata,
             )
 

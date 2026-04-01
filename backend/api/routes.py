@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import tempfile
+import traceback
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
@@ -57,11 +59,34 @@ class ChatRequest(BaseModel):
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 def _model_to_graph_json(model: TopologyModel) -> dict:
-    """Convert a TopologyModel to D3-compatible nodes+links JSON."""
+    """Convert a TopologyModel to D3-compatible nodes+links JSON.
+
+    Uses pre-built lookup maps to avoid O(N²) nested scans.
+    """
+    # Build lookup maps ONCE: O(N)
+    node_clients: Dict[str, List] = {nid: [] for nid in model.nodes}
+    for c in model.clients.values():
+        if c.home_node_id in node_clients:
+            node_clients[c.home_node_id].append(c)
+
+    node_ports: Dict[str, List] = {nid: [] for nid in model.nodes}
+    for p in model.ports.values():
+        if p.node_id in node_ports:
+            node_ports[p.node_id].append(p)
+
+    # Pre-compute edge flows: (source, target) → [app_ids]
+    edge_flows: Dict[tuple, List[str]] = {}
+    for c in model.clients.values():
+        for pid in c.connected_ports:
+            port = model.ports.get(pid)
+            if port and port.direction == PortDirection.REMOTE and port.remote_node_id:
+                key = (c.home_node_id, port.remote_node_id)
+                edge_flows.setdefault(key, []).append(f"{c.app_id} -> {port.remote_node_id}")
+
     nodes = []
     for n in model.nodes.values():
-        clients_on = [c for c in model.clients.values() if c.home_node_id == n.id]
-        ports_on = [p for p in model.ports.values() if p.node_id == n.id]
+        clients_on = node_clients.get(n.id, [])
+        ports_on = node_ports.get(n.id, [])
         local_q = sum(1 for p in ports_on if p.direction == PortDirection.LOCAL)
         remote_q = sum(1 for p in ports_on if p.direction == PortDirection.REMOTE)
         alias_q = sum(1 for p in ports_on if p.direction == PortDirection.ALIAS)
@@ -82,26 +107,12 @@ def _model_to_graph_json(model: TopologyModel) -> dict:
             "local_queues": local_q,
             "remote_queues": remote_q,
             "alias_queues": alias_q,
-            "queues": [
-                {"name": p.name, "type": p.direction.value, "remote_qm": p.remote_node_id}
-                for p in ports_on
-            ],
             **n.business_metadata,
         })
 
-    # For each edge, find the message flows (apps) that use this channel
     links = []
     for e in model.edges.values():
-        # Find apps on source QM producing to target QM
-        flows = []
-        for c in model.clients.values():
-            if c.home_node_id == e.source_node_id:
-                for pid in c.connected_ports:
-                    port = model.ports.get(pid)
-                    if port and port.direction == PortDirection.REMOTE and port.remote_node_id == e.target_node_id:
-                        flows.append(f"{c.app_id} -> {port.remote_node_id}")
-                        break
-
+        flows = edge_flows.get((e.source_node_id, e.target_node_id), [])
         links.append({
             "id": e.id,
             "source": e.source_node_id,
@@ -147,39 +158,49 @@ async def upload_csv(file: UploadFile = File(...)):
     if not file.filename.endswith(".csv"):
         raise HTTPException(400, "File must be a CSV")
 
-    contents = await file.read()
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".csv")
-    tmp.write(contents)
-    tmp.close()
+    tmp_path = None
+    try:
+        contents = await file.read()
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".csv")
+        tmp.write(contents)
+        tmp.close()
+        tmp_path = tmp.name
 
-    log = DecisionLog()
-    adapter = MQAdapter(decision_log=log)
-    model = adapter.parse(tmp.name)
+        log = DecisionLog()
+        adapter = MQAdapter(decision_log=log)
+        model = adapter.parse(tmp_path)
 
-    # Run graph discovery immediately so as-is view shows inferred channels
-    discovery = GraphDiscovery(log)
-    model = discovery.run(model)
+        # Run graph discovery immediately so as-is view shows inferred channels
+        discovery = GraphDiscovery(log)
+        model = discovery.run(model)
 
-    _state["as_is_model"] = model
-    _state["target_model"] = None
-    _state["optimization_result"] = None
-    _state["decision_log"] = log
-    _state["adapter"] = adapter
+        _state["as_is_model"] = model
+        _state["target_model"] = None
+        _state["optimization_result"] = None
+        _state["decision_log"] = log
+        _state["adapter"] = adapter
 
-    metrics = _scorer.score(model)
+        metrics = _scorer.score(model)
 
-    return {
-        "status": "ok",
-        "summary": model.summary(),
-        "metrics": metrics.to_dict(),
-        "nodes": list(model.nodes.keys()),
-        "clients": [
-            {"id": c.id, "app_id": c.app_id, "name": c.app_name,
-             "role": c.role.value, "home_qm": c.home_node_id}
-            for c in model.clients.values()
-        ],
-        "parsing_decisions": len(log),
-    }
+        return {
+            "status": "ok",
+            "summary": model.summary(),
+            "metrics": metrics.to_dict(),
+            "nodes": list(model.nodes.keys()),
+            "clients": [
+                {"id": c.id, "app_id": c.app_id, "name": c.app_name,
+                 "role": c.role.value, "home_qm": c.home_node_id}
+                for c in model.clients.values()
+            ],
+            "parsing_decisions": len(log),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Failed to parse CSV: {e}")
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
 
 @router.post("/optimize")
@@ -189,17 +210,20 @@ async def run_optimization():
     if model is None:
         raise HTTPException(400, "No topology loaded. Upload a CSV first.")
 
-    pipeline = OptimizationPipeline(_scorer)
-    result = pipeline.run(model.deep_copy())
+    try:
+        pipeline = OptimizationPipeline(_scorer)
+        result = pipeline.run(model.deep_copy())
 
-    _state["target_model"] = result.target_model
-    _state["optimization_result"] = result
-    _state["decision_log"] = result.decision_log
+        _state["target_model"] = result.target_model
+        _state["optimization_result"] = result
+        _state["decision_log"] = result.decision_log
 
-    return {
-        "status": "ok",
-        **result.to_dict(),
-    }
+        return {
+            "status": "ok",
+            **result.to_dict(),
+        }
+    except Exception as e:
+        raise HTTPException(500, f"Optimization failed: {e}")
 
 
 @router.get("/topology/as-is")

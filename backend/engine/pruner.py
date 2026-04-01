@@ -95,9 +95,14 @@ class DeadObjectPruner:
 
     def _prune_dead_aliases(self, model: TopologyModel) -> int:
         """Remove aliases that resolve to non-existent queues."""
-        # Build a set of all existing queue names per node
+        # Build lookup sets ONCE to avoid O(N²) nested scans
         existing_queues = {
             (p.node_id, p.name)
+            for p in model.ports.values()
+            if p.direction != PortDirection.ALIAS
+        }
+        all_queue_names = {
+            p.name
             for p in model.ports.values()
             if p.direction != PortDirection.ALIAS
         }
@@ -106,17 +111,10 @@ class DeadObjectPruner:
         for pid, port in model.ports.items():
             if port.direction != PortDirection.ALIAS:
                 continue
-            # An alias should resolve to a queue on the same or remote node
             if port.remote_queue:
                 target_node = port.remote_node_id or port.node_id
                 if (target_node, port.remote_queue) not in existing_queues:
-                    # Check if the target queue exists anywhere
-                    found = any(
-                        p.name == port.remote_queue
-                        for p in model.ports.values()
-                        if p.direction != PortDirection.ALIAS
-                    )
-                    if not found:
+                    if port.remote_queue not in all_queue_names:
                         dead.append(pid)
 
         for pid in dead:

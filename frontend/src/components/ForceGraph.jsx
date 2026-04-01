@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState } from 'react';
+import { useRef, useEffect, useState, useMemo } from 'react';
 import * as d3 from 'd3';
 
 const COMMUNITY_COLORS = [
@@ -11,12 +11,104 @@ const COMMUNITY_COLORS_DIM = [
   '#ec489933', '#14b8a633', '#f9731633', '#06b6d433', '#84cc1633',
 ];
 
+// Above this many nodes, aggregate into community summary nodes
+const MAX_DIRECT_NODES = 300;
+
+/**
+ * Aggregate large graphs by community: each community becomes one summary node.
+ * Hub nodes and unclustered nodes stay as-is.
+ */
+function aggregateGraph(data) {
+  if (!data || data.nodes.length <= MAX_DIRECT_NODES) return data;
+
+  const communityMap = {};  // community_id → { nodes, clients, ports, ... }
+  const standalone = [];     // nodes without community
+
+  for (const n of data.nodes) {
+    const cid = n.community_id;
+    if (cid == null) {
+      standalone.push(n);
+      continue;
+    }
+    if (!communityMap[cid]) {
+      communityMap[cid] = { id: `community_${cid}`, nodes: [], clients: 0, ports: 0, hubs: [] };
+    }
+    const cm = communityMap[cid];
+    cm.nodes.push(n.id);
+    cm.clients += n.client_count || 0;
+    cm.ports += n.port_count || 0;
+    if (n.is_hub) cm.hubs.push(n.id);
+  }
+
+  // Build aggregated nodes
+  const aggNodes = [];
+
+  // Keep standalone nodes
+  for (const n of standalone) {
+    aggNodes.push(n);
+  }
+
+  // One node per community
+  const nodeToAgg = {};  // original node id → aggregated node id
+  for (const [cid, cm] of Object.entries(communityMap)) {
+    const hubLabel = cm.hubs.length > 0 ? ` (Hub: ${cm.hubs[0]})` : '';
+    const aggNode = {
+      id: cm.id,
+      name: `Community ${cid}${hubLabel}`,
+      type: 'queue_manager',
+      region: '',
+      community_id: parseInt(cid),
+      is_hub: cm.hubs.length > 0,
+      client_count: cm.clients,
+      clients: [{ id: cm.id, app_id: `${cm.nodes.length} QMs`, name: `${cm.clients} apps`, role: 'both' }],
+      port_count: cm.ports,
+      local_queues: 0,
+      remote_queues: 0,
+      alias_queues: 0,
+    };
+    aggNodes.push(aggNode);
+    for (const nid of cm.nodes) {
+      nodeToAgg[nid] = cm.id;
+    }
+  }
+
+  // Build aggregated links (deduplicate after mapping)
+  const seenLinks = new Set();
+  const aggLinks = [];
+  for (const l of data.links) {
+    const src = nodeToAgg[l.source] || l.source;
+    const tgt = nodeToAgg[l.target] || l.target;
+    if (src === tgt) continue;
+    const key = `${src}->${tgt}`;
+    if (seenLinks.has(key)) continue;
+    seenLinks.add(key);
+    aggLinks.push({ ...l, id: key, source: src, target: tgt, name: key });
+  }
+
+  return {
+    nodes: aggNodes,
+    links: aggLinks,
+    summary: {
+      ...data.summary,
+      aggregated: true,
+      original_nodes: data.nodes.length,
+      original_edges: data.links.length,
+      total_nodes: aggNodes.length,
+      total_edges: aggLinks.length,
+    },
+  };
+}
+
+
 export default function ForceGraph({ data, width = 600, height = 500, title = '', onSelectNode }) {
   const svgRef = useRef();
   const [selectedNode, setSelectedNode] = useState(null);
 
+  // Aggregate if too many nodes
+  const graphData = useMemo(() => aggregateGraph(data), [data]);
+
   useEffect(() => {
-    if (!data || !data.nodes || data.nodes.length === 0) return;
+    if (!graphData || !graphData.nodes || graphData.nodes.length === 0) return;
 
     const svg = d3.select(svgRef.current);
     svg.selectAll('*').remove();
@@ -31,8 +123,11 @@ export default function ForceGraph({ data, width = 600, height = 500, title = ''
     svg.call(zoom);
 
     // Clone data to avoid d3 mutation issues
-    const nodes = data.nodes.map((d) => ({ ...d }));
-    const links = data.links.map((d) => ({ ...d }));
+    const nodes = graphData.nodes.map((d) => ({ ...d }));
+    const links = graphData.links.map((d) => ({ ...d }));
+
+    // Build node lookup map for O(1) access (instead of nodes.find per link)
+    const nodeMap = new Map(nodes.map((n) => [n.id, n]));
 
     // Node size based on app count + queues
     const nodeRadius = (d) => {
@@ -41,14 +136,20 @@ export default function ForceGraph({ data, width = 600, height = 500, title = ''
       return base + extra;
     };
 
+    // Tune force params for graph size
+    const n = nodes.length;
+    const chargeStrength = n > 100 ? -400 : -800;
+    const linkDist = n > 100 ? 150 : 220;
+
     const simulation = d3
       .forceSimulation(nodes)
-      .force('link', d3.forceLink(links).id((d) => d.id).distance(220).strength(0.5))
-      .force('charge', d3.forceManyBody().strength(-800))
+      .force('link', d3.forceLink(links).id((d) => d.id).distance(linkDist).strength(0.5))
+      .force('charge', d3.forceManyBody().strength(chargeStrength).distanceMax(500))
       .force('center', d3.forceCenter(width / 2, height / 2))
       .force('collision', d3.forceCollide().radius((d) => nodeRadius(d) + 20))
       .force('x', d3.forceX(width / 2).strength(0.05))
-      .force('y', d3.forceY(height / 2).strength(0.05));
+      .force('y', d3.forceY(height / 2).strength(0.05))
+      .alphaDecay(n > 100 ? 0.05 : 0.0228);  // Settle faster for large graphs
 
     // Arrow markers - one per community color
     COMMUNITY_COLORS.forEach((color, i) => {
@@ -96,7 +197,7 @@ export default function ForceGraph({ data, width = 600, height = 500, title = ''
       .append('path')
       .attr('fill', 'none')
       .attr('stroke', (d) => {
-        const srcNode = nodes.find((n) => n.id === (d.source.id || d.source));
+        const srcNode = nodeMap.get(d.source.id || d.source);
         if (srcNode && srcNode.community_id != null) {
           return COMMUNITY_COLORS[srcNode.community_id % COMMUNITY_COLORS.length];
         }
@@ -106,24 +207,27 @@ export default function ForceGraph({ data, width = 600, height = 500, title = ''
       .attr('stroke-dasharray', (d) => d.topology === 'backbone' ? '8,4' : 'none')
       .attr('stroke-opacity', 0.4)
       .attr('marker-end', (d) => {
-        const srcNode = nodes.find((n) => n.id === (d.source.id || d.source));
+        const srcNode = nodeMap.get(d.source.id || d.source);
         if (srcNode && srcNode.community_id != null) {
           return `url(#arrow-${srcNode.community_id % COMMUNITY_COLORS.length})`;
         }
         return 'url(#arrow-default)';
       });
 
-    // Channel name label on links
-    const linkLabel = linkGroup
-      .selectAll('text')
-      .data(links)
-      .enter()
-      .append('text')
-      .attr('font-size', 8)
-      .attr('fill', '#6b7280')
-      .attr('text-anchor', 'middle')
-      .attr('dy', -6)
-      .text((d) => d.name || '');
+    // Channel name label on links (skip for large graphs — too cluttered)
+    let linkLabel;
+    if (n <= 50) {
+      linkLabel = linkGroup
+        .selectAll('text')
+        .data(links)
+        .enter()
+        .append('text')
+        .attr('font-size', 8)
+        .attr('fill', '#6b7280')
+        .attr('text-anchor', 'middle')
+        .attr('dy', -6)
+        .text((d) => d.name || '');
+    }
 
     // --- NODES ---
     const nodeGroup = g.append('g').attr('class', 'nodes');
@@ -187,7 +291,7 @@ export default function ForceGraph({ data, width = 600, height = 500, title = ''
 
       // QM name (large, centered)
       el.append('text')
-        .text(d.id)
+        .text(d.id.length > 16 ? d.id.slice(0, 14) + '..' : d.id)
         .attr('text-anchor', 'middle')
         .attr('dy', d.client_count > 0 ? -8 : 2)
         .attr('font-size', d.is_hub ? 13 : 11)
@@ -195,7 +299,7 @@ export default function ForceGraph({ data, width = 600, height = 500, title = ''
         .attr('font-family', 'monospace')
         .attr('fill', '#f3f4f6');
 
-      // App list inside node
+      // App list inside node (limit display for large graphs)
       const clients = d.clients || [];
       if (clients.length > 0 && clients.length <= 4) {
         clients.forEach((c, i) => {
@@ -282,9 +386,11 @@ export default function ForceGraph({ data, width = 600, height = 500, title = ''
         return `M${sx},${sy}A${dr},${dr} 0 0,1 ${tx},${ty}`;
       });
 
-      linkLabel
-        .attr('x', (d) => (d.source.x + d.target.x) / 2)
-        .attr('y', (d) => (d.source.y + d.target.y) / 2);
+      if (linkLabel) {
+        linkLabel
+          .attr('x', (d) => (d.source.x + d.target.x) / 2)
+          .attr('y', (d) => (d.source.y + d.target.y) / 2);
+      }
 
       node.attr('transform', (d) => `translate(${d.x},${d.y})`);
     });
@@ -306,18 +412,26 @@ export default function ForceGraph({ data, width = 600, height = 500, title = ''
     });
 
     return () => simulation.stop();
-  }, [data, width, height]);
+  }, [graphData, width, height]);
+
+  const isAggregated = graphData?.summary?.aggregated;
 
   return (
     <div className="bg-gray-900/50 border border-gray-800 rounded-xl overflow-hidden">
       {title && (
         <div className="px-4 py-2 border-b border-gray-800 flex items-center justify-between">
           <span className="text-sm font-medium text-gray-300">{title}</span>
-          {data?.summary && (
-            <span className="text-xs text-gray-500">
-              {data.summary.total_nodes} QMs &middot; {data.summary.total_edges} channels &middot; {data.summary.total_clients} apps
-            </span>
-          )}
+          <span className="text-xs text-gray-500">
+            {isAggregated ? (
+              <>
+                {graphData.summary.original_nodes} QMs aggregated into {graphData.summary.total_nodes} groups &middot; {graphData.summary.total_edges} channels
+              </>
+            ) : graphData?.summary ? (
+              <>
+                {graphData.summary.total_nodes} QMs &middot; {graphData.summary.total_edges} channels &middot; {graphData.summary.total_clients} apps
+              </>
+            ) : null}
+          </span>
         </div>
       )}
       <svg
@@ -345,7 +459,7 @@ export default function ForceGraph({ data, width = 600, height = 500, title = ''
               L:{selectedNode.local_queues || 0} R:{selectedNode.remote_queues || 0} A:{selectedNode.alias_queues || 0}
             </div>
           </div>
-          {selectedNode.clients && selectedNode.clients.length > 0 && (
+          {selectedNode.clients && selectedNode.clients.length > 0 && selectedNode.clients.length <= 20 && (
             <div className="space-y-1">
               {selectedNode.clients.map((c) => (
                 <div key={c.id} className="flex items-center gap-2">
