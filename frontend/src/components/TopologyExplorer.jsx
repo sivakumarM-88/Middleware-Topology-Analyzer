@@ -1,9 +1,77 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import ForceGraph from './ForceGraph';
+
+/**
+ * Filter a graph to show only nodes matching the filter and their direct
+ * neighbors (nodes connected by an edge).  Links are kept only when both
+ * endpoints survive the filter.
+ */
+function filterGraph(graph, filterQM, filterAppID) {
+  if (!graph || (!filterQM && !filterAppID)) return graph;
+
+  // Identify "seed" node IDs that match the filter criteria
+  const seeds = new Set();
+  for (const n of graph.nodes) {
+    const matchQM = !filterQM || n.id === filterQM;
+    const matchApp =
+      !filterAppID ||
+      (n.clients && n.clients.some((c) => c.app_id === filterAppID));
+    if (matchQM && matchApp) seeds.add(n.id);
+  }
+
+  // Expand seeds to include their direct neighbors (one hop)
+  const visible = new Set(seeds);
+  for (const l of graph.links) {
+    const src = typeof l.source === 'object' ? l.source.id : l.source;
+    const tgt = typeof l.target === 'object' ? l.target.id : l.target;
+    if (seeds.has(src)) visible.add(tgt);
+    if (seeds.has(tgt)) visible.add(src);
+  }
+
+  const nodes = graph.nodes.filter((n) => visible.has(n.id));
+  const nodeSet = new Set(nodes.map((n) => n.id));
+  const links = graph.links.filter((l) => {
+    const src = typeof l.source === 'object' ? l.source.id : l.source;
+    const tgt = typeof l.target === 'object' ? l.target.id : l.target;
+    return nodeSet.has(src) && nodeSet.has(tgt);
+  });
+
+  return { ...graph, nodes, links, summary: { ...graph.summary, total_nodes: nodes.length, total_edges: links.length } };
+}
 
 export default function TopologyExplorer({ asIsGraph, targetGraph, optimized }) {
   const [selected, setSelected] = useState(null);
   const [view, setView] = useState('side-by-side'); // 'side-by-side' | 'as-is' | 'target'
+  const [filterQM, setFilterQM] = useState('');
+  const [filterAppID, setFilterAppID] = useState('');
+
+  // Build dropdown options from the active data source
+  // (all hooks must run before any conditional return)
+  const activeRaw = view === 'target' && targetGraph ? targetGraph : asIsGraph;
+  const qmOptions = useMemo(() => {
+    if (!activeRaw) return [];
+    return [...new Set(activeRaw.nodes.map((n) => n.id))].sort();
+  }, [activeRaw]);
+
+  const appOptions = useMemo(() => {
+    if (!activeRaw) return [];
+    const ids = new Set();
+    for (const n of activeRaw.nodes) {
+      if (n.clients) n.clients.forEach((c) => ids.add(c.app_id));
+    }
+    return [...ids].sort();
+  }, [activeRaw]);
+
+  // Apply filters
+  const hasFilter = filterQM || filterAppID;
+  const filteredAsIs = useMemo(
+    () => filterGraph(asIsGraph, filterQM, filterAppID),
+    [asIsGraph, filterQM, filterAppID],
+  );
+  const filteredTarget = useMemo(
+    () => filterGraph(targetGraph, filterQM, filterAppID),
+    [targetGraph, filterQM, filterAppID],
+  );
 
   if (!asIsGraph) {
     return (
@@ -13,28 +81,86 @@ export default function TopologyExplorer({ asIsGraph, targetGraph, optimized }) 
     );
   }
 
-  const graphData = view === 'target' ? targetGraph : asIsGraph;
+  const graphData = view === 'target' ? filteredTarget : filteredAsIs;
   const showSideBySide = view === 'side-by-side' && optimized && targetGraph;
+  const displayData = graphData || filteredAsIs;
 
   return (
     <div>
-      {/* View controls */}
-      {optimized && targetGraph && (
-        <div className="flex items-center gap-2 mb-4">
-          <span className="text-xs text-gray-500 mr-2">View:</span>
-          {['side-by-side', 'as-is', 'target'].map((v) => (
-            <button
-              key={v}
-              onClick={() => setView(v)}
-              className={`px-3 py-1.5 text-xs rounded-lg transition ${
-                view === v
-                  ? 'bg-indigo-600 text-white'
-                  : 'bg-gray-800 text-gray-400 hover:text-gray-200'
-              }`}
-            >
-              {v === 'side-by-side' ? 'Side by Side' : v === 'as-is' ? 'As-Is Only' : 'Target Only'}
-            </button>
-          ))}
+      {/* Filter & View controls */}
+      <div className="flex flex-wrap items-end gap-4 mb-4">
+        {/* QM filter */}
+        <div className="flex flex-col gap-1">
+          <label className="text-[10px] text-gray-500 uppercase tracking-wider">Queue Manager</label>
+          <select
+            value={filterQM}
+            onChange={(e) => setFilterQM(e.target.value)}
+            className="bg-gray-800 border border-gray-700 text-gray-200 text-xs rounded-lg px-2 py-1.5 min-w-[160px] focus:border-indigo-500 focus:outline-none"
+          >
+            <option value="">All QMs ({qmOptions.length})</option>
+            {qmOptions.map((qm) => (
+              <option key={qm} value={qm}>{qm}</option>
+            ))}
+          </select>
+        </div>
+
+        {/* AppID filter */}
+        <div className="flex flex-col gap-1">
+          <label className="text-[10px] text-gray-500 uppercase tracking-wider">Application ID</label>
+          <select
+            value={filterAppID}
+            onChange={(e) => setFilterAppID(e.target.value)}
+            className="bg-gray-800 border border-gray-700 text-gray-200 text-xs rounded-lg px-2 py-1.5 min-w-[160px] focus:border-indigo-500 focus:outline-none"
+          >
+            <option value="">All Apps ({appOptions.length})</option>
+            {appOptions.map((id) => (
+              <option key={id} value={id}>{id}</option>
+            ))}
+          </select>
+        </div>
+
+        {/* Clear filters */}
+        {hasFilter && (
+          <button
+            onClick={() => { setFilterQM(''); setFilterAppID(''); }}
+            className="px-3 py-1.5 text-xs rounded-lg bg-red-900/40 text-red-300 hover:bg-red-900/60 transition"
+          >
+            Clear filters
+          </button>
+        )}
+
+        {/* Spacer */}
+        <div className="flex-1" />
+
+        {/* View toggle */}
+        {optimized && targetGraph && (
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-gray-500 mr-1">View:</span>
+            {['side-by-side', 'as-is', 'target'].map((v) => (
+              <button
+                key={v}
+                onClick={() => setView(v)}
+                className={`px-3 py-1.5 text-xs rounded-lg transition ${
+                  view === v
+                    ? 'bg-indigo-600 text-white'
+                    : 'bg-gray-800 text-gray-400 hover:text-gray-200'
+                }`}
+              >
+                {v === 'side-by-side' ? 'Side by Side' : v === 'as-is' ? 'As-Is Only' : 'Target Only'}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Filter info banner */}
+      {hasFilter && graphData && (
+        <div className="mb-3 px-3 py-2 rounded-lg bg-indigo-900/20 border border-indigo-800 text-xs text-indigo-300">
+          Showing {graphData.nodes.length} QMs and {graphData.links.length} channels
+          {filterQM && <> matching QM <span className="font-mono font-bold">{filterQM}</span></>}
+          {filterQM && filterAppID && <> and</>}
+          {filterAppID && <> App <span className="font-mono font-bold">{filterAppID}</span></>}
+          {' '}(+ direct neighbors)
         </div>
       )}
 
@@ -42,14 +168,14 @@ export default function TopologyExplorer({ asIsGraph, targetGraph, optimized }) 
       {showSideBySide ? (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <ForceGraph
-            data={asIsGraph}
+            data={filteredAsIs}
             width={600}
             height={500}
             title="As-Is Topology (before optimization)"
             onSelectNode={setSelected}
           />
           <ForceGraph
-            data={targetGraph}
+            data={filteredTarget}
             width={600}
             height={500}
             title="Target Topology (optimized)"
@@ -58,7 +184,7 @@ export default function TopologyExplorer({ asIsGraph, targetGraph, optimized }) 
         </div>
       ) : (
         <ForceGraph
-          data={graphData || asIsGraph}
+          data={graphData || filteredAsIs}
           width={1100}
           height={600}
           title={view === 'target' ? 'Target Topology (optimized)' : 'As-Is Topology'}
@@ -106,14 +232,17 @@ export default function TopologyExplorer({ asIsGraph, targetGraph, optimized }) 
       </div>
 
       {/* Channel list */}
-      {graphData && graphData.links && graphData.links.length > 0 && (
+      {displayData && displayData.links && displayData.links.length > 0 && (
         <div className="mt-4 bg-gray-900/50 border border-gray-800 rounded-xl p-4">
           <h3 className="text-sm font-medium text-gray-300 mb-3">
-            Channels ({graphData.links.length})
+            Channels ({displayData.links.length})
+            {displayData.links.length > 200 && (
+              <span className="text-gray-500 font-normal ml-2">(showing first 200)</span>
+            )}
           </h3>
-          <div className="overflow-x-auto">
+          <div className="overflow-x-auto max-h-[400px] overflow-y-auto">
             <table className="w-full text-xs text-left">
-              <thead className="text-gray-500 uppercase">
+              <thead className="text-gray-500 uppercase sticky top-0 bg-gray-900">
                 <tr>
                   <th className="px-3 py-2">Channel Name</th>
                   <th className="px-3 py-2">From</th>
@@ -123,7 +252,7 @@ export default function TopologyExplorer({ asIsGraph, targetGraph, optimized }) 
                 </tr>
               </thead>
               <tbody>
-                {graphData.links.map((l) => (
+                {displayData.links.slice(0, 200).map((l) => (
                   <tr key={l.id} className="border-t border-gray-800">
                     <td className="px-3 py-2 font-mono text-indigo-400">{l.name}</td>
                     <td className="px-3 py-2 font-mono text-gray-300">{typeof l.source === 'object' ? l.source.id : l.source}</td>
@@ -148,10 +277,13 @@ export default function TopologyExplorer({ asIsGraph, targetGraph, optimized }) 
       {/* Node details grid */}
       <div className="mt-4 bg-gray-900/50 border border-gray-800 rounded-xl p-4">
         <h3 className="text-sm font-medium text-gray-300 mb-3">
-          Queue Managers ({(graphData || asIsGraph).nodes.length})
+          Queue Managers ({displayData.nodes.length})
+          {displayData.nodes.length > 100 && !hasFilter && (
+            <span className="text-gray-500 font-normal ml-2">(use filters above to narrow results)</span>
+          )}
         </h3>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-          {(graphData || asIsGraph).nodes.map((n) => (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 max-h-[600px] overflow-y-auto">
+          {displayData.nodes.map((n) => (
             <div
               key={n.id}
               className={`p-3 rounded-lg border transition cursor-pointer ${
