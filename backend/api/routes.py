@@ -64,22 +64,40 @@ def _client_detail(client, model) -> dict:
     local_q = [p for p in ports if p.direction == PortDirection.LOCAL]
     remote_q = [p for p in ports if p.direction == PortDirection.REMOTE]
     alias_q = [p for p in ports if p.direction == PortDirection.ALIAS]
+    xmit_q = [p for p in ports if p.direction == PortDirection.TRANSMISSION]
+    # Remote targets: QMs this app communicates with (from remote + alias queues)
     remote_targets = sorted(set(
         p.remote_node_id for p in ports
-        if p.direction in (PortDirection.REMOTE, PortDirection.ALIAS) and p.remote_node_id
+        if p.direction in (PortDirection.REMOTE, PortDirection.ALIAS)
+        and p.remote_node_id
+        and p.remote_node_id != client.home_node_id  # exclude self-references
+    ))
+    # All QMs where this app has ports (includes home + any other QMs with local queues)
+    all_node_ids = sorted(set(
+        p.node_id for p in ports if p.node_id
     ))
     return {
         "id": client.id,
         "app_id": client.app_id,
         "name": client.app_name,
         "role": client.role.value,
+        "home_node_id": client.home_node_id,
+        "all_node_ids": all_node_ids,
         "local_queue_count": len(local_q),
         "remote_queue_count": len(remote_q),
         "alias_queue_count": len(alias_q),
+        "xmit_queue_count": len(xmit_q),
         "remote_targets": remote_targets,
         "queues": [
-            {"name": p.name, "type": p.direction.value, "remote_qm": p.remote_node_id or None}
-            for p in sorted(ports, key=lambda p: (p.direction.value, p.name))[:30]
+            {
+                "name": p.name,
+                "type": p.direction.value,
+                "on_qm": p.node_id,
+                "remote_qm": p.remote_node_id if p.remote_node_id else None,
+                "remote_queue": p.remote_queue if p.remote_queue else None,
+                "xmit_queue": p.xmit_queue if p.xmit_queue and p.xmit_queue != "0" else None,
+            }
+            for p in sorted(ports, key=lambda p: (p.direction.value, p.name))[:40]
         ],
     }
 

@@ -13,12 +13,14 @@ function filterGraph(graph, filterQM, filterAppID, filterCommunity) {
   const seeds = new Set();
 
   if (filterAppID) {
-    // APP-CENTRIC: home QM + only the QMs this app's remote queues target
+    // APP-CENTRIC: all QMs where this app has ports + remote target QMs
     for (const n of graph.nodes) {
       const client = n.clients?.find(c => c.app_id === filterAppID);
       if (client) {
-        seeds.add(n.id); // home QM
-        (client.remote_targets || []).forEach(t => seeds.add(t)); // remote QMs
+        // All QMs where app has queues (home + any others with local queues)
+        (client.all_node_ids || [n.id]).forEach(nid => seeds.add(nid));
+        // Remote target QMs (where remote/alias queues point)
+        (client.remote_targets || []).forEach(t => seeds.add(t));
       }
     }
   } else if (filterQM) {
@@ -283,39 +285,108 @@ export default function TopologyExplorer({ asIsGraph, targetGraph, optimized, me
             if (c) { appClient = c; appHomeQM = n.id; break; }
           }
         }
+        // Group queues by type for structured display
+        const localQs = appClient?.queues?.filter(q => q.type === 'local') || [];
+        const remoteQs = appClient?.queues?.filter(q => q.type === 'remote') || [];
+        const aliasQs = appClient?.queues?.filter(q => q.type === 'alias') || [];
+        const xmitQs = appClient?.queues?.filter(q => q.type === 'transmission') || [];
+
         return (
-          <div className="mb-3 px-4 py-3 rounded-lg bg-indigo-900/20 border border-indigo-800 text-xs text-indigo-200">
+          <div className="mb-3 px-4 py-3 rounded-xl bg-gray-900/80 border border-gray-700 text-xs">
             {filterAppID && appClient ? (
-              <div className="space-y-1.5">
-                <div>
-                  App <span className="font-mono font-bold text-white">{filterAppID}</span>
-                  <span className="text-gray-400 ml-1">({appClient.name})</span>
-                  <span className={`ml-2 px-1.5 py-0.5 rounded text-[10px] ${appClient.role === 'producer' ? 'bg-emerald-900/50 text-emerald-400' : appClient.role === 'consumer' ? 'bg-amber-900/50 text-amber-400' : 'bg-purple-900/50 text-purple-400'}`}>{appClient.role}</span>
-                </div>
-                <div className="flex gap-4 text-gray-400">
-                  <span>Home QM: <span className="font-mono text-white">{appHomeQM}</span></span>
-                  <span>Local queues: <span className="text-emerald-400">{appClient.local_queue_count ?? 0}</span></span>
-                  <span>Remote queues: <span className="text-amber-400">{appClient.remote_queue_count ?? 0}</span></span>
+              <div className="space-y-2.5">
+                {/* Header */}
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-gray-400">App</span>
+                  <span className="font-mono font-bold text-white text-sm">{filterAppID}</span>
+                  <span className="text-gray-500">({appClient.name})</span>
+                  <span className={`px-1.5 py-0.5 rounded text-[10px] ${appClient.role === 'producer' ? 'bg-emerald-900/50 text-emerald-400' : appClient.role === 'consumer' ? 'bg-amber-900/50 text-amber-400' : 'bg-purple-900/50 text-purple-400'}`}>{appClient.role}</span>
+                  <span className="text-gray-600 ml-1">QMs:</span>
+                  {(appClient.all_node_ids || [appHomeQM]).map((nid, i) => (
+                    <span key={nid} className={`font-mono font-bold ${nid === appHomeQM ? 'text-indigo-400' : 'text-sky-400'}`}>
+                      {i > 0 ? ', ' : ''}{nid}{nid === appHomeQM ? ' (home)' : ''}
+                    </span>
+                  ))}
                   {(appClient.remote_targets?.length || 0) > 0 && (
-                    <span>Connects to: {appClient.remote_targets.map((t, i) => (
-                      <span key={t} className="font-mono text-white">{i > 0 ? ', ' : ''}{t}</span>
+                    <span className="text-gray-600 ml-1">{'\u2192'} {appClient.remote_targets.map((t, i) => (
+                      <span key={t} className="font-mono font-bold text-amber-400">{i > 0 ? ', ' : ''}{t}</span>
                     ))}</span>
                   )}
                 </div>
-                {appClient.queues?.length > 0 && (
-                  <div className="flex flex-wrap gap-1.5 pt-1">
-                    {appClient.queues.slice(0, 12).map((q, i) => (
-                      <span key={i} className="font-mono text-[10px] bg-gray-800/80 px-1.5 py-0.5 rounded">
-                        <span className={q.type === 'local' ? 'text-emerald-500' : q.type === 'remote' ? 'text-amber-500' : 'text-purple-500'}>
-                          {q.type[0].toUpperCase()}
-                        </span>
-                        <span className="text-gray-400 ml-1">{q.name}</span>
-                        {q.remote_qm && <span className="text-gray-600 ml-1">{'\u2192'} {q.remote_qm}</span>}
-                      </span>
-                    ))}
-                    {appClient.queues.length > 12 && <span className="text-gray-600 text-[10px]">+{appClient.queues.length - 12} more</span>}
-                  </div>
-                )}
+                {/* Queue breakdown by type */}
+                <div className="grid gap-2">
+                  {/* LOCAL queues */}
+                  {localQs.length > 0 && (
+                    <div>
+                      <div className="text-[10px] text-emerald-500 font-semibold uppercase tracking-wider mb-0.5">
+                        Local Queues ({localQs.length})
+                      </div>
+                      <div className="flex flex-wrap gap-1">
+                        {localQs.slice(0, 10).map((q, i) => (
+                          <span key={i} className="font-mono text-[10px] bg-emerald-950/40 border border-emerald-900/40 px-1.5 py-0.5 rounded text-emerald-300">
+                            {q.name}{q.on_qm && q.on_qm !== appHomeQM ? ` [${q.on_qm}]` : ''}
+                          </span>
+                        ))}
+                        {localQs.length > 10 && <span className="text-gray-600 text-[10px]">+{localQs.length - 10} more</span>}
+                      </div>
+                    </div>
+                  )}
+                  {/* REMOTE queues */}
+                  {remoteQs.length > 0 && (
+                    <div>
+                      <div className="text-[10px] text-amber-500 font-semibold uppercase tracking-wider mb-0.5">
+                        Remote Queues ({remoteQs.length}) — sends to other QMs
+                      </div>
+                      <div className="flex flex-col gap-0.5">
+                        {remoteQs.slice(0, 10).map((q, i) => (
+                          <div key={i} className="font-mono text-[10px] flex items-center gap-1.5">
+                            <span className="text-amber-300 bg-amber-950/40 border border-amber-900/40 px-1.5 py-0.5 rounded">{q.name}</span>
+                            <span className="text-gray-500">{'\u2192'}</span>
+                            <span className="text-white font-semibold">{q.remote_qm}</span>
+                            {q.remote_queue && <span className="text-gray-600">Q: {q.remote_queue}</span>}
+                            {q.xmit_queue && <span className="text-gray-600">XMIT: {q.xmit_queue}</span>}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {/* ALIAS queues */}
+                  {aliasQs.length > 0 && (
+                    <div>
+                      <div className="text-[10px] text-purple-500 font-semibold uppercase tracking-wider mb-0.5">
+                        Alias Queues ({aliasQs.length}) — resolves to another queue
+                      </div>
+                      <div className="flex flex-col gap-0.5">
+                        {aliasQs.slice(0, 10).map((q, i) => (
+                          <div key={i} className="font-mono text-[10px] flex items-center gap-1.5">
+                            <span className="text-purple-300 bg-purple-950/40 border border-purple-900/40 px-1.5 py-0.5 rounded">{q.name}</span>
+                            <span className="text-gray-500">{'\u2192'}</span>
+                            {q.remote_qm && <span className="text-white">{q.remote_qm}:</span>}
+                            {q.remote_queue && <span className="text-gray-400">{q.remote_queue}</span>}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {/* XMIT queues */}
+                  {xmitQs.length > 0 && (
+                    <div>
+                      <div className="text-[10px] text-cyan-500 font-semibold uppercase tracking-wider mb-0.5">
+                        Transmission Queues ({xmitQs.length})
+                      </div>
+                      <div className="flex flex-wrap gap-1">
+                        {xmitQs.slice(0, 10).map((q, i) => (
+                          <span key={i} className="font-mono text-[10px] bg-cyan-950/40 border border-cyan-900/40 px-1.5 py-0.5 rounded text-cyan-300">
+                            {q.name}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {localQs.length === 0 && remoteQs.length === 0 && aliasQs.length === 0 && (
+                    <div className="text-gray-500">No queues found for this application.</div>
+                  )}
+                </div>
               </div>
             ) : filterQM ? (
               <div>
