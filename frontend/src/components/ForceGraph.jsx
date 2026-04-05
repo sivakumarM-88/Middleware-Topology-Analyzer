@@ -69,11 +69,12 @@ export default function ForceGraph({ data, width = 900, height = 600, title, onS
   const focusRef = useRef(null);
   const [focusedNode, setFocusedNode] = useState(null);
   const [focusedNeighbors, setFocusedNeighbors] = useState([]);
+  const [focusedEdges, setFocusedEdges] = useState([]);
 
   const gd = useMemo(() => data ? aggregateGraph(data) : null, [data]);
 
   // Reset focus when data changes
-  useEffect(() => { focusRef.current = null; setFocusedNode(null); setFocusedNeighbors([]); }, [gd]);
+  useEffect(() => { focusRef.current = null; setFocusedNode(null); setFocusedNeighbors([]); setFocusedEdges([]); }, [gd]);
 
   /* ── Main D3 effect ──────────────────────────────────────────────── */
   useEffect(() => {
@@ -200,13 +201,8 @@ export default function ForceGraph({ data, width = 900, height = 600, title, onS
         d3.select(this.previousSibling).attr('stroke-opacity', 0.45).attr('stroke-width', edgeW);
       });
 
-    // Link labels for small graphs
-    let linkLabel;
-    if (small) {
-      linkLabel = linkGroup.selectAll('.ll').data(links).enter().append('text')
-        .attr('class', 'll').attr('font-size', 7).attr('fill', '#6b7280')
-        .attr('text-anchor', 'middle').attr('dy', -5).text(d => d.name || '');
-    }
+    // Label layer for focused-edge labels (no static labels — avoids overlap)
+    const focusLabelGroup = g.append('g').attr('class', 'focus-labels');
 
     /* ── Nodes ─────────────────────────────────────────────────────── */
     const node = nodeGroup.selectAll('.ng').data(nodes).enter().append('g')
@@ -219,12 +215,37 @@ export default function ForceGraph({ data, width = 900, height = 600, title, onS
 
     // Focus helper
     function applyFocus(fNode) {
+      focusLabelGroup.selectAll('*').remove();
       if (fNode) {
         const nb = adj.get(fNode.id) || new Set();
         nodeGroup.selectAll('.ng').transition().duration(250).attr('opacity', n => n.id === fNode.id || nb.has(n.id) ? 1 : 0.08);
         linkPath.transition().duration(250)
           .attr('stroke-opacity', l => { const s = l.source.id ?? l.source, t = l.target.id ?? l.target; return s === fNode.id || t === fNode.id ? 0.9 : 0.03; })
           .attr('stroke-width', l => { const s = l.source.id ?? l.source, t = l.target.id ?? l.target; return (s === fNode.id || t === fNode.id) ? 3.5 : 0.5; });
+        // Show channel names on focused edges
+        const focusLinks = links.filter(l => {
+          const s = l.source.id ?? l.source, t = l.target.id ?? l.target;
+          return s === fNode.id || t === fNode.id;
+        });
+        focusLinks.forEach(l => {
+          if (!l.name) return;
+          const mx = (l.source.x + l.target.x) / 2;
+          const my = (l.source.y + l.target.y) / 2;
+          // Offset perpendicular to avoid stacking
+          const dx = l.target.x - l.source.x, dy = l.target.y - l.source.y;
+          const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+          const ox = (-dy / dist) * 14, oy = (dx / dist) * 14;
+          const tw = Math.min(l.name.length * 5.5 + 10, 120);
+          focusLabelGroup.append('rect')
+            .attr('x', mx + ox - tw / 2).attr('y', my + oy - 8)
+            .attr('width', tw).attr('height', 14).attr('rx', 3)
+            .attr('fill', '#1f2937').attr('fill-opacity', 0.92);
+          focusLabelGroup.append('text')
+            .attr('x', mx + ox).attr('y', my + oy + 3)
+            .attr('text-anchor', 'middle').attr('font-size', 7.5)
+            .attr('font-family', 'ui-monospace,monospace').attr('fill', '#d1d5db')
+            .text(l.name.length > 22 ? l.name.slice(0, 20) + '..' : l.name);
+        });
       } else {
         nodeGroup.selectAll('.ng').transition().duration(250).attr('opacity', 1);
         linkPath.transition().duration(250).attr('stroke-opacity', 0.45).attr('stroke-width', edgeW);
@@ -239,10 +260,24 @@ export default function ForceGraph({ data, width = 900, height = 600, title, onS
       focusRef.current = nf;
       setFocusedNode(nf);
       setFocusedNeighbors(nf ? [...(adj.get(d.id) || [])] : []);
+      // Collect edge data for focus panel
+      if (nf) {
+        const nodeEdges = links.filter(l => {
+          const s = l.source.id ?? l.source, t = l.target.id ?? l.target;
+          return s === d.id || t === d.id;
+        }).map(l => ({
+          name: l.name, topology: l.topology || 'direct',
+          from: l.source.id ?? l.source, to: l.target.id ?? l.target,
+          flows: l.flows || [],
+        }));
+        setFocusedEdges(nodeEdges);
+      } else {
+        setFocusedEdges([]);
+      }
       applyFocus(nf);
       if (onSelectNode) onSelectNode(nf || d);
     });
-    svg.on('click', () => { focusRef.current = null; setFocusedNode(null); setFocusedNeighbors([]); applyFocus(null); });
+    svg.on('click', () => { focusRef.current = null; setFocusedNode(null); setFocusedNeighbors([]); setFocusedEdges([]); applyFocus(null); });
 
     // Draw each node
     node.each(function (d) {
@@ -380,7 +415,7 @@ export default function ForceGraph({ data, width = 900, height = 600, title, onS
         const dr = Math.sqrt(dx * dx + dy * dy) * 0.8;
         return `M${d.source.x},${d.source.y}A${dr},${dr} 0 0,1 ${d.target.x},${d.target.y}`;
       });
-      if (linkLabel) linkLabel.attr('x', d => (d.source.x + d.target.x) / 2).attr('y', d => (d.source.y + d.target.y) / 2);
+      // (static labels removed — shown on focus/hover instead)
       node.attr('transform', d => `translate(${d.x},${d.y})`);
     });
 
@@ -458,6 +493,28 @@ export default function ForceGraph({ data, width = 900, height = 600, title, onS
                   </span>
                 </span>
               ))}
+            </div>
+          )}
+          {/* Channels from/to this node */}
+          {focusedEdges.length > 0 && (
+            <div className="mt-1.5 pt-1.5 border-t border-gray-800">
+              <span className="text-[10px] text-gray-500 font-semibold">Channels ({focusedEdges.length}):</span>
+              <div className="grid gap-0.5 mt-0.5 max-h-24 overflow-y-auto">
+                {focusedEdges.slice(0, 15).map((e, i) => (
+                  <div key={i} className="text-[10px] font-mono flex items-center gap-1.5 flex-wrap">
+                    <span className="text-indigo-400">{e.name}</span>
+                    <span className="text-gray-600">{e.from} {'\u2192'} {e.to}</span>
+                    <span className={`px-1 rounded ${
+                      e.topology === 'backbone' ? 'bg-amber-900/50 text-amber-300' :
+                      e.topology === 'spoke_to_hub' ? 'bg-emerald-900/50 text-emerald-300' :
+                      e.topology === 'hub_to_spoke' ? 'bg-blue-900/50 text-blue-300' :
+                      'bg-gray-800 text-gray-400'
+                    }`}>{e.topology}</span>
+                    {e.flows.length > 0 && <span className="text-gray-600 text-[9px]">{e.flows[0]}{e.flows.length > 1 ? ` +${e.flows.length - 1}` : ''}</span>}
+                  </div>
+                ))}
+                {focusedEdges.length > 15 && <span className="text-[10px] text-gray-600">+{focusedEdges.length - 15} more</span>}
+              </div>
             </div>
           )}
           {/* Aggregate members */}

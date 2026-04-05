@@ -1,32 +1,44 @@
 import { useState, useMemo } from 'react';
 import ForceGraph from './ForceGraph';
 
-/* ── Filter a graph: seeds = nodes matching ANY filter, then expand 1 hop ── */
+/**
+ * Filter graph — QM and App are MUTUALLY EXCLUSIVE:
+ *  - App filter: show ONLY the app's home QM + its remote target QMs (precise view)
+ *  - QM filter: show that QM + its direct edge neighbors
+ *  - Community: show all members of that community
+ */
 function filterGraph(graph, filterQM, filterAppID, filterCommunity) {
   if (!graph || (!filterQM && !filterAppID && !filterCommunity)) return graph;
 
   const seeds = new Set();
-  for (const n of graph.nodes) {
-    // OR logic: match QM OR app OR community
-    if (filterQM && n.id === filterQM) seeds.add(n.id);
-    if (filterAppID && n.clients?.some(c => c.app_id === filterAppID)) seeds.add(n.id);
-    if (filterCommunity && String(n.community_id) === filterCommunity) seeds.add(n.id);
-  }
 
-  // If community filter is active, include ALL members (no neighbor expansion needed)
-  const expandNeighbors = !filterCommunity;
-
-  const visible = new Set(seeds);
-  if (expandNeighbors) {
+  if (filterAppID) {
+    // APP-CENTRIC: home QM + only the QMs this app's remote queues target
+    for (const n of graph.nodes) {
+      const client = n.clients?.find(c => c.app_id === filterAppID);
+      if (client) {
+        seeds.add(n.id); // home QM
+        (client.remote_targets || []).forEach(t => seeds.add(t)); // remote QMs
+      }
+    }
+  } else if (filterQM) {
+    // QM-CENTRIC: the QM + its direct edge neighbors
+    seeds.add(filterQM);
     for (const l of graph.links) {
       const src = typeof l.source === 'object' ? l.source.id : l.source;
       const tgt = typeof l.target === 'object' ? l.target.id : l.target;
-      if (seeds.has(src)) visible.add(tgt);
-      if (seeds.has(tgt)) visible.add(src);
+      if (src === filterQM) seeds.add(tgt);
+      if (tgt === filterQM) seeds.add(src);
     }
   }
 
-  const nodes = graph.nodes.filter(n => visible.has(n.id));
+  if (filterCommunity) {
+    for (const n of graph.nodes) {
+      if (String(n.community_id) === filterCommunity) seeds.add(n.id);
+    }
+  }
+
+  const nodes = graph.nodes.filter(n => seeds.has(n.id));
   const nodeSet = new Set(nodes.map(n => n.id));
   const links = graph.links.filter(l => {
     const src = typeof l.source === 'object' ? l.source.id : l.source;
@@ -197,20 +209,30 @@ export default function TopologyExplorer({ asIsGraph, targetGraph, optimized, me
 
       {/* ── Filters & View Controls ──────────────────────────────────── */}
       <div className="flex flex-wrap items-end gap-3 mb-4">
-        {/* QM filter */}
+        {/* QM filter — clears App when selected */}
         <div className="flex flex-col gap-1">
-          <label className="text-[10px] text-gray-500 uppercase tracking-wider">Queue Manager</label>
-          <select value={filterQM} onChange={e => setFilterQM(e.target.value)}
-            className="bg-gray-800 border border-gray-700 text-gray-200 text-xs rounded-lg px-2 py-1.5 min-w-[150px] focus:border-indigo-500 focus:outline-none">
+          <label className="text-[10px] text-gray-500 uppercase tracking-wider">
+            Queue Manager {filterQM && <span className="text-indigo-400 normal-case">(active)</span>}
+          </label>
+          <select value={filterQM}
+            onChange={e => { setFilterQM(e.target.value); if (e.target.value) setFilterAppID(''); }}
+            disabled={!!filterAppID}
+            className={`bg-gray-800 border text-gray-200 text-xs rounded-lg px-2 py-1.5 min-w-[150px] focus:border-indigo-500 focus:outline-none ${filterAppID ? 'border-gray-800 opacity-40 cursor-not-allowed' : 'border-gray-700'}`}>
             <option value="">All QMs ({qmOptions.length})</option>
             {qmOptions.map(qm => <option key={qm} value={qm}>{qm}</option>)}
           </select>
         </div>
-        {/* App filter */}
+        {/* Separator */}
+        <div className="text-xs text-gray-600 pb-1.5 font-medium">OR</div>
+        {/* App filter — clears QM when selected */}
         <div className="flex flex-col gap-1">
-          <label className="text-[10px] text-gray-500 uppercase tracking-wider">Application</label>
-          <select value={filterAppID} onChange={e => setFilterAppID(e.target.value)}
-            className="bg-gray-800 border border-gray-700 text-gray-200 text-xs rounded-lg px-2 py-1.5 min-w-[150px] focus:border-indigo-500 focus:outline-none">
+          <label className="text-[10px] text-gray-500 uppercase tracking-wider">
+            Application {filterAppID && <span className="text-indigo-400 normal-case">(active)</span>}
+          </label>
+          <select value={filterAppID}
+            onChange={e => { setFilterAppID(e.target.value); if (e.target.value) setFilterQM(''); }}
+            disabled={!!filterQM}
+            className={`bg-gray-800 border text-gray-200 text-xs rounded-lg px-2 py-1.5 min-w-[150px] focus:border-indigo-500 focus:outline-none ${filterQM ? 'border-gray-800 opacity-40 cursor-not-allowed' : 'border-gray-700'}`}>
             <option value="">All Apps ({appOptions.length})</option>
             {appOptions.map(id => <option key={id} value={id}>{id}</option>)}
           </select>
@@ -251,15 +273,66 @@ export default function TopologyExplorer({ asIsGraph, targetGraph, optimized, me
       </div>
 
       {/* ── Filter info ──────────────────────────────────────────────── */}
-      {hasFilter && displayData && (
-        <div className="mb-3 px-3 py-2 rounded-lg bg-indigo-900/20 border border-indigo-800 text-xs text-indigo-300">
-          Showing <span className="font-bold text-white">{displayData.nodes.length}</span> QMs and <span className="font-bold text-white">{displayData.links.length}</span> channels
-          {filterQM && <> for QM <span className="font-mono font-bold">{filterQM}</span></>}
-          {filterAppID && <> {filterQM ? 'or' : 'for'} App <span className="font-mono font-bold">{filterAppID}</span></>}
-          {filterCommunity && <> {filterQM || filterAppID ? 'or' : 'in'} Community <span className="font-bold">C{filterCommunity}</span></>}
-          {(filterQM || filterAppID) && !filterCommunity && <> (+ direct neighbors)</>}
-        </div>
-      )}
+      {hasFilter && displayData && (() => {
+        // Find the selected app's client data for rich detail
+        let appClient = null;
+        let appHomeQM = null;
+        if (filterAppID) {
+          for (const n of (activeRaw?.nodes || [])) {
+            const c = n.clients?.find(cl => cl.app_id === filterAppID);
+            if (c) { appClient = c; appHomeQM = n.id; break; }
+          }
+        }
+        return (
+          <div className="mb-3 px-4 py-3 rounded-lg bg-indigo-900/20 border border-indigo-800 text-xs text-indigo-200">
+            {filterAppID && appClient ? (
+              <div className="space-y-1.5">
+                <div>
+                  App <span className="font-mono font-bold text-white">{filterAppID}</span>
+                  <span className="text-gray-400 ml-1">({appClient.name})</span>
+                  <span className={`ml-2 px-1.5 py-0.5 rounded text-[10px] ${appClient.role === 'producer' ? 'bg-emerald-900/50 text-emerald-400' : appClient.role === 'consumer' ? 'bg-amber-900/50 text-amber-400' : 'bg-purple-900/50 text-purple-400'}`}>{appClient.role}</span>
+                </div>
+                <div className="flex gap-4 text-gray-400">
+                  <span>Home QM: <span className="font-mono text-white">{appHomeQM}</span></span>
+                  <span>Local queues: <span className="text-emerald-400">{appClient.local_queue_count ?? 0}</span></span>
+                  <span>Remote queues: <span className="text-amber-400">{appClient.remote_queue_count ?? 0}</span></span>
+                  {(appClient.remote_targets?.length || 0) > 0 && (
+                    <span>Connects to: {appClient.remote_targets.map((t, i) => (
+                      <span key={t} className="font-mono text-white">{i > 0 ? ', ' : ''}{t}</span>
+                    ))}</span>
+                  )}
+                </div>
+                {appClient.queues?.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 pt-1">
+                    {appClient.queues.slice(0, 12).map((q, i) => (
+                      <span key={i} className="font-mono text-[10px] bg-gray-800/80 px-1.5 py-0.5 rounded">
+                        <span className={q.type === 'local' ? 'text-emerald-500' : q.type === 'remote' ? 'text-amber-500' : 'text-purple-500'}>
+                          {q.type[0].toUpperCase()}
+                        </span>
+                        <span className="text-gray-400 ml-1">{q.name}</span>
+                        {q.remote_qm && <span className="text-gray-600 ml-1">{'\u2192'} {q.remote_qm}</span>}
+                      </span>
+                    ))}
+                    {appClient.queues.length > 12 && <span className="text-gray-600 text-[10px]">+{appClient.queues.length - 12} more</span>}
+                  </div>
+                )}
+              </div>
+            ) : filterQM ? (
+              <div>
+                QM <span className="font-mono font-bold text-white">{filterQM}</span> and its
+                <span className="font-bold text-white ml-1">{displayData.nodes.length - 1}</span> connected QMs,
+                <span className="font-bold text-white ml-1">{displayData.links.length}</span> channels
+              </div>
+            ) : filterCommunity ? (
+              <div>
+                Community <span className="font-bold text-white">C{filterCommunity}</span> \u2014
+                <span className="font-bold text-white ml-1">{displayData.nodes.length}</span> QMs,
+                <span className="font-bold text-white ml-1">{displayData.links.length}</span> channels
+              </div>
+            ) : null}
+          </div>
+        );
+      })()}
 
       {/* ── Graphs ───────────────────────────────────────────────────── */}
       {showSideBySide ? (

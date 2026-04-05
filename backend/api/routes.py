@@ -58,6 +58,32 @@ class ChatRequest(BaseModel):
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
+def _client_detail(client, model) -> dict:
+    """Build rich per-client data including queue breakdown and remote targets."""
+    ports = [model.ports[pid] for pid in client.connected_ports if pid in model.ports]
+    local_q = [p for p in ports if p.direction == PortDirection.LOCAL]
+    remote_q = [p for p in ports if p.direction == PortDirection.REMOTE]
+    alias_q = [p for p in ports if p.direction == PortDirection.ALIAS]
+    remote_targets = sorted(set(
+        p.remote_node_id for p in ports
+        if p.direction in (PortDirection.REMOTE, PortDirection.ALIAS) and p.remote_node_id
+    ))
+    return {
+        "id": client.id,
+        "app_id": client.app_id,
+        "name": client.app_name,
+        "role": client.role.value,
+        "local_queue_count": len(local_q),
+        "remote_queue_count": len(remote_q),
+        "alias_queue_count": len(alias_q),
+        "remote_targets": remote_targets,
+        "queues": [
+            {"name": p.name, "type": p.direction.value, "remote_qm": p.remote_node_id or None}
+            for p in sorted(ports, key=lambda p: (p.direction.value, p.name))[:30]
+        ],
+    }
+
+
 def _model_to_graph_json(model: TopologyModel) -> dict:
     """Convert a TopologyModel to D3-compatible nodes+links JSON.
 
@@ -108,7 +134,7 @@ def _model_to_graph_json(model: TopologyModel) -> dict:
             "is_isolated": is_isolated,
             "client_count": len(clients_on),
             "clients": [
-                {"id": c.id, "app_id": c.app_id, "name": c.app_name, "role": c.role.value}
+                _client_detail(c, model)
                 for c in clients_on
             ],
             "port_count": len(ports_on),
