@@ -222,6 +222,8 @@ export default function App() {
                 asIsGraph={asIsGraph}
                 targetGraph={targetGraph}
                 optimized={optimized}
+                metrics={metrics}
+                decisions={decisions}
               />
             )}
             {tab === 2 && <OnboardApp optimized={optimized} />}

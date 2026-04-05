@@ -1,477 +1,473 @@
 import { useRef, useEffect, useState, useMemo } from 'react';
 import * as d3 from 'd3';
 
-const COMMUNITY_COLORS = [
+const COLORS = [
   '#6366f1', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6',
   '#ec4899', '#14b8a6', '#f97316', '#06b6d4', '#84cc16',
+  '#a855f7', '#22d3ee', '#fb923c', '#4ade80', '#f43f5e',
 ];
+const HULL_FILL = COLORS.map(c => c + '10');
+const HULL_STROKE = COLORS.map(c => c + '30');
 
-const COMMUNITY_COLORS_DIM = [
-  '#6366f133', '#10b98133', '#f59e0b33', '#ef444433', '#8b5cf633',
-  '#ec489933', '#14b8a633', '#f9731633', '#06b6d433', '#84cc1633',
-];
+const MAX_DIRECT = 200;
 
-// Above this many nodes, aggregate into community summary nodes
-const MAX_DIRECT_NODES = 300;
-
-/**
- * Aggregate large graphs by community: each community becomes one summary node.
- * Hub nodes and unclustered nodes stay as-is.
- */
+/* ── Aggregate large graphs into community summary nodes ──────────── */
 function aggregateGraph(data) {
-  if (!data || data.nodes.length <= MAX_DIRECT_NODES) return data;
+  if (!data || data.nodes.length <= MAX_DIRECT) return { ...data, _agg: false };
 
-  const communityMap = {};  // community_id → { nodes, clients, ports, ... }
-  const standalone = [];     // nodes without community
-
+  const comms = {};
+  const standalone = [];
   for (const n of data.nodes) {
-    const cid = n.community_id;
-    if (cid == null) {
-      standalone.push(n);
-      continue;
-    }
-    if (!communityMap[cid]) {
-      communityMap[cid] = { id: `community_${cid}`, nodes: [], clients: 0, ports: 0, hubs: [] };
-    }
-    const cm = communityMap[cid];
-    cm.nodes.push(n.id);
-    cm.clients += n.client_count || 0;
-    cm.ports += n.port_count || 0;
-    if (n.is_hub) cm.hubs.push(n.id);
+    if (n.community_id == null) { standalone.push(n); continue; }
+    const c = (comms[n.community_id] ??= { nodes: [], clients: 0, ports: 0, hubs: [] });
+    c.nodes.push(n);
+    c.clients += n.client_count || 0;
+    c.ports += n.port_count || 0;
+    if (n.is_hub) c.hubs.push(n.id);
   }
 
-  // Build aggregated nodes
-  const aggNodes = [];
+  const aggNodes = [...standalone];
+  const remap = {};
 
-  // Keep standalone nodes
-  for (const n of standalone) {
-    aggNodes.push(n);
+  for (const [cid, cm] of Object.entries(comms)) {
+    const hub = cm.hubs[0];
+    const id = `community_${cid}`;
+    aggNodes.push({
+      id, name: hub ? `Hub: ${hub}` : `Community ${cid}`,
+      community_id: +cid, is_hub: cm.hubs.length > 0, is_aggregate: true,
+      member_count: cm.nodes.length, client_count: cm.clients, port_count: cm.ports,
+      clients: [{ id, app_id: `${cm.nodes.length} QMs`, name: `${cm.clients} apps`, role: 'both' }],
+      members: cm.nodes.map(n => n.id), local_queues: 0, remote_queues: 0, alias_queues: 0,
+    });
+    for (const n of cm.nodes) remap[n.id] = id;
   }
 
-  // One node per community
-  const nodeToAgg = {};  // original node id → aggregated node id
-  for (const [cid, cm] of Object.entries(communityMap)) {
-    const hubLabel = cm.hubs.length > 0 ? ` (Hub: ${cm.hubs[0]})` : '';
-    const aggNode = {
-      id: cm.id,
-      name: `Community ${cid}${hubLabel}`,
-      type: 'queue_manager',
-      region: '',
-      community_id: parseInt(cid),
-      is_hub: cm.hubs.length > 0,
-      client_count: cm.clients,
-      clients: [{ id: cm.id, app_id: `${cm.nodes.length} QMs`, name: `${cm.clients} apps`, role: 'both' }],
-      port_count: cm.ports,
-      local_queues: 0,
-      remote_queues: 0,
-      alias_queues: 0,
-    };
-    aggNodes.push(aggNode);
-    for (const nid of cm.nodes) {
-      nodeToAgg[nid] = cm.id;
-    }
-  }
-
-  // Build aggregated links (deduplicate after mapping)
-  const seenLinks = new Set();
+  const seen = new Set();
   const aggLinks = [];
   for (const l of data.links) {
-    const src = nodeToAgg[l.source] || l.source;
-    const tgt = nodeToAgg[l.target] || l.target;
-    if (src === tgt) continue;
-    const key = `${src}->${tgt}`;
-    if (seenLinks.has(key)) continue;
-    seenLinks.add(key);
-    aggLinks.push({ ...l, id: key, source: src, target: tgt, name: key });
+    const s = remap[l.source] || l.source;
+    const t = remap[l.target] || l.target;
+    if (s === t) continue;
+    const k = `${s}->${t}`;
+    if (seen.has(k)) { const ex = aggLinks.find(e => e.id === k); if (ex) ex._count++; continue; }
+    seen.add(k);
+    aggLinks.push({ ...l, id: k, source: s, target: t, name: '', _count: 1, topology: 'aggregated' });
   }
+  aggLinks.forEach(l => { l.name = `${l._count} channel${l._count > 1 ? 's' : ''}`; });
 
   return {
-    nodes: aggNodes,
-    links: aggLinks,
-    summary: {
-      ...data.summary,
-      aggregated: true,
-      original_nodes: data.nodes.length,
-      original_edges: data.links.length,
-      total_nodes: aggNodes.length,
-      total_edges: aggLinks.length,
-    },
+    nodes: aggNodes, links: aggLinks, _agg: true,
+    summary: { ...data.summary, aggregated: true, original_nodes: data.nodes.length, original_edges: data.links.length, total_nodes: aggNodes.length, total_edges: aggLinks.length },
   };
 }
 
-
-export default function ForceGraph({ data, width = 600, height = 500, title = '', onSelectNode }) {
+/* ── ForceGraph Component ─────────────────────────────────────────── */
+export default function ForceGraph({ data, width = 900, height = 600, title, onSelectNode, changeSet }) {
   const svgRef = useRef();
-  const [selectedNode, setSelectedNode] = useState(null);
+  const tipRef = useRef();
+  const adjRef = useRef(new Map());
+  const focusRef = useRef(null);
+  const [focusedNode, setFocusedNode] = useState(null);
+  const [focusedNeighbors, setFocusedNeighbors] = useState([]);
 
-  // Aggregate if too many nodes
-  const graphData = useMemo(() => aggregateGraph(data), [data]);
+  const gd = useMemo(() => data ? aggregateGraph(data) : null, [data]);
 
+  // Reset focus when data changes
+  useEffect(() => { focusRef.current = null; setFocusedNode(null); setFocusedNeighbors([]); }, [gd]);
+
+  /* ── Main D3 effect ──────────────────────────────────────────────── */
   useEffect(() => {
-    if (!graphData || !graphData.nodes || graphData.nodes.length === 0) return;
-
+    if (!gd?.nodes?.length) return;
     const svg = d3.select(svgRef.current);
     svg.selectAll('*').remove();
+
+    const W = width, H = height;
+    svg.attr('viewBox', `0 0 ${W} ${H}`);
 
     const defs = svg.append('defs');
     const g = svg.append('g');
 
     // Zoom
-    const zoom = d3.zoom()
-      .scaleExtent([0.2, 5])
-      .on('zoom', (event) => g.attr('transform', event.transform));
+    const zoom = d3.zoom().scaleExtent([0.1, 6]).on('zoom', e => g.attr('transform', e.transform));
     svg.call(zoom);
 
-    // Clone data to avoid d3 mutation issues
-    const nodes = graphData.nodes.map((d) => ({ ...d }));
-    const links = graphData.links.map((d) => ({ ...d }));
+    // Clone data
+    const nodes = gd.nodes.map(d => ({ ...d }));
+    const links = gd.links.map(d => ({ ...d }));
+    const nMap = new Map(nodes.map(n => [n.id, n]));
 
-    // Build node lookup map for O(1) access (instead of nodes.find per link)
-    const nodeMap = new Map(nodes.map((n) => [n.id, n]));
+    // Adjacency
+    const adj = new Map();
+    nodes.forEach(n => adj.set(n.id, new Set()));
+    links.forEach(l => {
+      const s = typeof l.source === 'object' ? l.source.id : l.source;
+      const t = typeof l.target === 'object' ? l.target.id : l.target;
+      adj.get(s)?.add(t); adj.get(t)?.add(s);
+    });
+    adjRef.current = adj;
 
-    // Node size based on app count + queues
-    const nodeRadius = (d) => {
-      const base = d.is_hub ? 45 : 32;
-      const extra = Math.min((d.client_count || 0) * 3, 15);
-      return base + extra;
+    // Layout params
+    const N = nodes.length;
+    const small = N <= 30, med = N <= 100;
+    const nodeR = d => {
+      if (d.is_aggregate) return 45 + Math.min((d.member_count || 0) * 1.5, 25);
+      const base = d.is_hub ? (small ? 46 : 36) : (small ? 36 : 26);
+      return base + Math.min((d.client_count || 0) * 2, 10);
     };
 
-    // Tune force params for graph size
-    const n = nodes.length;
-    const chargeStrength = n > 100 ? -400 : -800;
-    const linkDist = n > 100 ? 150 : 220;
-
-    const simulation = d3
-      .forceSimulation(nodes)
-      .force('link', d3.forceLink(links).id((d) => d.id).distance(linkDist).strength(0.5))
-      .force('charge', d3.forceManyBody().strength(chargeStrength).distanceMax(500))
-      .force('center', d3.forceCenter(width / 2, height / 2))
-      .force('collision', d3.forceCollide().radius((d) => nodeRadius(d) + 20))
-      .force('x', d3.forceX(width / 2).strength(0.05))
-      .force('y', d3.forceY(height / 2).strength(0.05))
-      .alphaDecay(n > 100 ? 0.05 : 0.0228);  // Settle faster for large graphs
-
-    // Arrow markers - one per community color
-    COMMUNITY_COLORS.forEach((color, i) => {
-      defs.append('marker')
-        .attr('id', `arrow-${i}`)
-        .attr('viewBox', '0 -5 10 10')
-        .attr('refX', 10)
-        .attr('refY', 0)
-        .attr('markerWidth', 8)
-        .attr('markerHeight', 8)
-        .attr('orient', 'auto')
-        .append('path')
-        .attr('d', 'M0,-4L10,0L0,4')
-        .attr('fill', color)
-        .attr('opacity', 0.6);
+    // Community-clustering targets
+    const commIds = [...new Set(nodes.filter(n => n.community_id != null).map(n => n.community_id))];
+    const cTargets = {};
+    commIds.forEach((cid, i) => {
+      const a = (2 * Math.PI * i) / (commIds.length || 1);
+      const r = Math.min(W, H) * 0.22;
+      cTargets[cid] = { x: W / 2 + Math.cos(a) * r, y: H / 2 + Math.sin(a) * r };
     });
-    // Default arrow
-    defs.append('marker')
-      .attr('id', 'arrow-default')
-      .attr('viewBox', '0 -5 10 10')
-      .attr('refX', 10)
-      .attr('refY', 0)
-      .attr('markerWidth', 8)
-      .attr('markerHeight', 8)
-      .attr('orient', 'auto')
-      .append('path')
-      .attr('d', 'M0,-4L10,0L0,4')
-      .attr('fill', '#4b5563')
-      .attr('opacity', 0.6);
 
-    // Glow filter for hubs
-    const filter = defs.append('filter').attr('id', 'glow');
-    filter.append('feGaussianBlur').attr('stdDeviation', '3').attr('result', 'coloredBlur');
-    const feMerge = filter.append('feMerge');
-    feMerge.append('feMergeNode').attr('in', 'coloredBlur');
-    feMerge.append('feMergeNode').attr('in', 'SourceGraphic');
+    // Pre-index community → nodes
+    const commNodes = {};
+    nodes.forEach(n => { if (n.community_id != null) (commNodes[n.community_id] ??= []).push(n); });
 
-    // --- LINKS (curved paths) ---
-    const linkGroup = g.append('g').attr('class', 'links');
+    // Simulation
+    const sim = d3.forceSimulation(nodes)
+      .force('link', d3.forceLink(links).id(d => d.id).distance(small ? 260 : med ? 160 : 110).strength(0.4))
+      .force('charge', d3.forceManyBody().strength(small ? -1100 : med ? -500 : -250).distanceMax(600))
+      .force('center', d3.forceCenter(W / 2, H / 2))
+      .force('collide', d3.forceCollide().radius(d => nodeR(d) + 12))
+      .force('cx', d3.forceX(d => cTargets[d.community_id]?.x ?? W / 2).strength(commIds.length > 1 ? 0.08 : 0.03))
+      .force('cy', d3.forceY(d => cTargets[d.community_id]?.y ?? H / 2).strength(commIds.length > 1 ? 0.08 : 0.03))
+      .alphaDecay(N > 80 ? 0.045 : 0.025);
 
-    const linkPath = linkGroup
-      .selectAll('path')
-      .data(links)
-      .enter()
-      .append('path')
-      .attr('fill', 'none')
-      .attr('stroke', (d) => {
-        const srcNode = nodeMap.get(d.source.id || d.source);
-        if (srcNode && srcNode.community_id != null) {
-          return COMMUNITY_COLORS[srcNode.community_id % COMMUNITY_COLORS.length];
-        }
-        return '#4b5563';
+    // Defs — arrows
+    COLORS.forEach((c, i) => {
+      defs.append('marker').attr('id', `a${i}`).attr('viewBox', '0 -5 10 10')
+        .attr('refX', 12).attr('refY', 0).attr('markerWidth', 6).attr('markerHeight', 6).attr('orient', 'auto')
+        .append('path').attr('d', 'M0,-4L10,0L0,4').attr('fill', c).attr('opacity', 0.7);
+    });
+    defs.append('marker').attr('id', 'a-bb').attr('viewBox', '0 -5 10 10')
+      .attr('refX', 12).attr('refY', 0).attr('markerWidth', 6).attr('markerHeight', 6).attr('orient', 'auto')
+      .append('path').attr('d', 'M0,-4L10,0L0,4').attr('fill', '#fbbf24').attr('opacity', 0.8);
+    // Glow
+    const glow = defs.append('filter').attr('id', 'glow');
+    glow.append('feGaussianBlur').attr('stdDeviation', '4').attr('result', 'blur');
+    const fm = glow.append('feMerge'); fm.append('feMergeNode').attr('in', 'blur'); fm.append('feMergeNode').attr('in', 'SourceGraphic');
+
+    // Layers
+    const hullLayer = g.append('g');
+    const linkGroup = g.append('g');
+    const nodeGroup = g.append('g');
+
+    /* ── Links ─────────────────────────────────────────────────────── */
+    const edgeColor = d => {
+      if (d.topology === 'backbone') return '#fbbf24';
+      const sn = nMap.get(typeof d.source === 'object' ? d.source.id : d.source);
+      return sn?.community_id != null ? COLORS[sn.community_id % COLORS.length] : '#4b5563';
+    };
+    const edgeW = d => d.topology === 'backbone' ? 3 : (d._count > 5 ? 2.5 : 1.5);
+    const edgeDash = d => d.topology === 'backbone' ? '8,4' : 'none';
+    const edgeMarker = d => {
+      if (d.topology === 'backbone') return 'url(#a-bb)';
+      const sn = nMap.get(typeof d.source === 'object' ? d.source.id : d.source);
+      return sn?.community_id != null ? `url(#a${sn.community_id % COLORS.length})` : '';
+    };
+
+    const linkPath = linkGroup.selectAll('.lp').data(links).enter().append('path')
+      .attr('class', 'lp').attr('fill', 'none')
+      .attr('stroke', edgeColor).attr('stroke-width', edgeW)
+      .attr('stroke-dasharray', edgeDash).attr('stroke-opacity', 0.45)
+      .attr('marker-end', edgeMarker);
+
+    // Invisible hover zones
+    linkGroup.selectAll('.lh').data(links).enter().append('path')
+      .attr('class', 'lh').attr('fill', 'none').attr('stroke', 'transparent').attr('stroke-width', 16).attr('cursor', 'pointer')
+      .on('mouseenter', function (ev, d) {
+        const sr = svgRef.current.getBoundingClientRect();
+        const x = ev.clientX - sr.left + 12, y = ev.clientY - sr.top - 8;
+        const s = typeof d.source === 'object' ? d.source.id : d.source;
+        const t = typeof d.target === 'object' ? d.target.id : d.target;
+        d3.select(tipRef.current)
+          .style('display', 'block').style('left', x + 'px').style('top', y + 'px')
+          .html(`<div class="font-mono text-[11px] font-bold text-white">${d.name || s + ' \u2192 ' + t}</div>
+            <div class="text-gray-400 text-[10px] mt-0.5">${s} \u2192 ${t}</div>
+            ${d.topology ? `<div class="mt-0.5"><span class="text-[10px] px-1.5 py-0.5 rounded ${d.topology === 'backbone' ? 'bg-amber-900/50 text-amber-300' : d.topology === 'spoke_to_hub' ? 'bg-emerald-900/50 text-emerald-300' : d.topology === 'hub_to_spoke' ? 'bg-blue-900/50 text-blue-300' : 'bg-gray-800 text-gray-400'}">${d.topology}</span></div>` : ''}
+            ${d.flows?.length ? `<div class="text-[10px] text-gray-500 mt-1">${d.flows.slice(0, 3).join('<br/>')}${d.flows.length > 3 ? '<br/>+' + (d.flows.length - 3) + ' more' : ''}</div>` : ''}
+            ${d._count ? `<div class="text-[10px] text-gray-500">${d._count} channels</div>` : ''}`);
+        // Highlight
+        d3.select(this.previousSibling).attr('stroke-opacity', 1).attr('stroke-width', 4);
       })
-      .attr('stroke-width', (d) => d.topology === 'backbone' ? 3 : 1.5)
-      .attr('stroke-dasharray', (d) => d.topology === 'backbone' ? '8,4' : 'none')
-      .attr('stroke-opacity', 0.4)
-      .attr('marker-end', (d) => {
-        const srcNode = nodeMap.get(d.source.id || d.source);
-        if (srcNode && srcNode.community_id != null) {
-          return `url(#arrow-${srcNode.community_id % COMMUNITY_COLORS.length})`;
-        }
-        return 'url(#arrow-default)';
+      .on('mouseleave', function () {
+        d3.select(tipRef.current).style('display', 'none');
+        d3.select(this.previousSibling).attr('stroke-opacity', 0.45).attr('stroke-width', edgeW);
       });
 
-    // Channel name label on links (skip for large graphs — too cluttered)
+    // Link labels for small graphs
     let linkLabel;
-    if (n <= 50) {
-      linkLabel = linkGroup
-        .selectAll('text')
-        .data(links)
-        .enter()
-        .append('text')
-        .attr('font-size', 8)
-        .attr('fill', '#6b7280')
-        .attr('text-anchor', 'middle')
-        .attr('dy', -6)
-        .text((d) => d.name || '');
+    if (small) {
+      linkLabel = linkGroup.selectAll('.ll').data(links).enter().append('text')
+        .attr('class', 'll').attr('font-size', 7).attr('fill', '#6b7280')
+        .attr('text-anchor', 'middle').attr('dy', -5).text(d => d.name || '');
     }
 
-    // --- NODES ---
-    const nodeGroup = g.append('g').attr('class', 'nodes');
-
-    const node = nodeGroup
-      .selectAll('g')
-      .data(nodes)
-      .enter()
-      .append('g')
-      .attr('cursor', 'pointer')
-      .call(
-        d3.drag()
-          .on('start', (event, d) => {
-            if (!event.active) simulation.alphaTarget(0.3).restart();
-            d.fx = d.x;
-            d.fy = d.y;
-          })
-          .on('drag', (event, d) => {
-            d.fx = event.x;
-            d.fy = event.y;
-          })
-          .on('end', (event, d) => {
-            if (!event.active) simulation.alphaTarget(0);
-            d.fx = null;
-            d.fy = null;
-          })
+    /* ── Nodes ─────────────────────────────────────────────────────── */
+    const node = nodeGroup.selectAll('.ng').data(nodes).enter().append('g')
+      .attr('class', 'ng').attr('cursor', 'pointer')
+      .call(d3.drag()
+        .on('start', (e, d) => { if (!e.active) sim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
+        .on('drag', (e, d) => { d.fx = e.x; d.fy = e.y; })
+        .on('end', (e, d) => { if (!e.active) sim.alphaTarget(0); d.fx = null; d.fy = null; })
       );
 
-    // Click handler
-    node.on('click', (event, d) => {
-      event.stopPropagation();
-      setSelectedNode((prev) => prev?.id === d.id ? null : d);
-      if (onSelectNode) onSelectNode(d);
+    // Focus helper
+    function applyFocus(fNode) {
+      if (fNode) {
+        const nb = adj.get(fNode.id) || new Set();
+        nodeGroup.selectAll('.ng').transition().duration(250).attr('opacity', n => n.id === fNode.id || nb.has(n.id) ? 1 : 0.08);
+        linkPath.transition().duration(250)
+          .attr('stroke-opacity', l => { const s = l.source.id ?? l.source, t = l.target.id ?? l.target; return s === fNode.id || t === fNode.id ? 0.9 : 0.03; })
+          .attr('stroke-width', l => { const s = l.source.id ?? l.source, t = l.target.id ?? l.target; return (s === fNode.id || t === fNode.id) ? 3.5 : 0.5; });
+      } else {
+        nodeGroup.selectAll('.ng').transition().duration(250).attr('opacity', 1);
+        linkPath.transition().duration(250).attr('stroke-opacity', 0.45).attr('stroke-width', edgeW);
+      }
+    }
+
+    // Click
+    node.on('click', (ev, d) => {
+      ev.stopPropagation();
+      const was = focusRef.current?.id === d.id;
+      const nf = was ? null : d;
+      focusRef.current = nf;
+      setFocusedNode(nf);
+      setFocusedNeighbors(nf ? [...(adj.get(d.id) || [])] : []);
+      applyFocus(nf);
+      if (onSelectNode) onSelectNode(nf || d);
     });
+    svg.on('click', () => { focusRef.current = null; setFocusedNode(null); setFocusedNeighbors([]); applyFocus(null); });
 
-    // Hub outer glow ring
-    node
-      .filter((d) => d.is_hub)
-      .append('circle')
-      .attr('r', (d) => nodeRadius(d) + 6)
-      .attr('fill', 'none')
-      .attr('stroke', '#fbbf24')
-      .attr('stroke-width', 2)
-      .attr('stroke-dasharray', '4,3')
-      .attr('opacity', 0.5)
-      .attr('filter', 'url(#glow)');
-
-    // Main node rectangle (rounded rect for a "card" look)
+    // Draw each node
     node.each(function (d) {
       const el = d3.select(this);
-      const r = nodeRadius(d);
-      const color = COMMUNITY_COLORS[(d.community_id ?? 0) % COMMUNITY_COLORS.length];
-      const colorDim = COMMUNITY_COLORS_DIM[(d.community_id ?? 0) % COMMUNITY_COLORS.length];
+      const r = nodeR(d);
+      const cid = d.community_id ?? 0;
+      const col = COLORS[cid % COLORS.length];
+      const isNew = changeSet?.newNodeIds?.has(d.id);
+      const isShared = changeSet?.sharedNodeIds?.has(d.id);
+      const deg = adj.get(d.id)?.size || 0;
 
-      // Background circle
-      el.append('circle')
-        .attr('r', r)
-        .attr('fill', colorDim)
-        .attr('stroke', color)
-        .attr('stroke-width', d.is_hub ? 3 : 1.5);
+      // Hub glow
+      if (d.is_hub && !d.is_aggregate) {
+        el.append('circle').attr('r', r + 8).attr('fill', 'none')
+          .attr('stroke', '#fbbf24').attr('stroke-width', 2.5).attr('stroke-dasharray', '6,3').attr('opacity', 0.6).attr('filter', 'url(#glow)');
+      }
+      // New ring
+      if (isNew) {
+        el.append('circle').attr('r', r + 5).attr('fill', 'none').attr('stroke', '#10b981').attr('stroke-width', 2.5).attr('opacity', 0.8);
+      }
+      // Shared ring
+      if (isShared) {
+        el.append('circle').attr('r', r + 5).attr('fill', 'none').attr('stroke', '#ef4444').attr('stroke-width', 2).attr('stroke-dasharray', '4,2').attr('opacity', 0.8);
+      }
 
-      // QM name (large, centered)
-      el.append('text')
-        .text(d.id.length > 16 ? d.id.slice(0, 14) + '..' : d.id)
-        .attr('text-anchor', 'middle')
-        .attr('dy', d.client_count > 0 ? -8 : 2)
-        .attr('font-size', d.is_hub ? 13 : 11)
-        .attr('font-weight', 700)
-        .attr('font-family', 'monospace')
-        .attr('fill', '#f3f4f6');
+      // Main circle
+      el.append('circle').attr('r', r)
+        .attr('fill', d.is_aggregate ? col + '20' : col + '15')
+        .attr('stroke', isNew ? '#10b981' : isShared ? '#ef4444' : col)
+        .attr('stroke-width', d.is_hub ? 3 : (isNew || isShared) ? 2.5 : 1.5);
 
-      // App list inside node (limit display for large graphs)
-      const clients = d.clients || [];
-      if (clients.length > 0 && clients.length <= 4) {
-        clients.forEach((c, i) => {
-          el.append('text')
-            .text(`${c.app_id} (${c.role[0].toUpperCase()})`)
-            .attr('text-anchor', 'middle')
-            .attr('dy', 6 + i * 12)
-            .attr('font-size', 8)
-            .attr('fill', '#9ca3af')
-            .attr('font-family', 'monospace');
+      // Name
+      const nm = d.id.length > 18 ? d.id.slice(0, 16) + '..' : d.id;
+      el.append('text').text(nm).attr('text-anchor', 'middle')
+        .attr('dy', deg > 0 ? -6 : 2)
+        .attr('font-size', d.is_hub ? (small ? 13 : 11) : (small ? 11 : 10))
+        .attr('font-weight', 700).attr('font-family', 'ui-monospace,monospace').attr('fill', '#f3f4f6');
+
+      // Connection count
+      if (deg > 0) {
+        el.append('text').text(`${deg} conn`).attr('text-anchor', 'middle').attr('dy', 7)
+          .attr('font-size', 8).attr('fill', '#9ca3af');
+      }
+
+      // Apps summary
+      const cl = d.clients || [];
+      if (cl.length > 0 && cl.length <= 3 && (small || d.is_aggregate)) {
+        cl.forEach((c, i) => {
+          el.append('text').text(`${c.app_id} (${c.role?.[0]?.toUpperCase() || '?'})`)
+            .attr('text-anchor', 'middle').attr('dy', 19 + i * 11)
+            .attr('font-size', 8).attr('fill', '#9ca3af').attr('font-family', 'ui-monospace,monospace');
         });
-      } else if (clients.length > 4) {
-        el.append('text')
-          .text(`${clients.length} apps`)
-          .attr('text-anchor', 'middle')
-          .attr('dy', 8)
-          .attr('font-size', 9)
-          .attr('fill', '#9ca3af');
+      } else if (d.client_count > 0 && cl.length > 3) {
+        el.append('text').text(`${d.client_count} apps`).attr('text-anchor', 'middle').attr('dy', 19)
+          .attr('font-size', 8).attr('fill', '#9ca3af');
       }
 
-      // Queue count badge (bottom)
-      const queueCount = d.port_count || 0;
-      if (queueCount > 0) {
-        const badgeY = r - 4;
-        el.append('circle')
-          .attr('cx', r * 0.6)
-          .attr('cy', -badgeY + 10)
-          .attr('r', 10)
-          .attr('fill', '#1f2937')
-          .attr('stroke', '#4b5563')
-          .attr('stroke-width', 1);
-        el.append('text')
-          .text(queueCount)
-          .attr('x', r * 0.6)
-          .attr('y', -badgeY + 10)
-          .attr('text-anchor', 'middle')
-          .attr('dy', 3.5)
-          .attr('font-size', 8)
-          .attr('font-weight', 600)
-          .attr('fill', '#d1d5db');
+      // Queue badge
+      if ((d.port_count || 0) > 0 && !d.is_aggregate) {
+        const bx = r * 0.65, by = -r + 10;
+        el.append('circle').attr('cx', bx).attr('cy', by).attr('r', 10).attr('fill', '#1f2937').attr('stroke', '#4b5563');
+        el.append('text').text(d.port_count).attr('x', bx).attr('y', by + 3.5)
+          .attr('text-anchor', 'middle').attr('font-size', 8).attr('font-weight', 600).attr('fill', '#d1d5db');
       }
 
-      // Hub badge
-      if (d.is_hub) {
-        el.append('text')
-          .text('HUB')
-          .attr('text-anchor', 'middle')
-          .attr('dy', -r - 8)
-          .attr('font-size', 9)
-          .attr('font-weight', 700)
-          .attr('fill', '#fbbf24')
-          .attr('letter-spacing', '1px');
+      // Top badge: HUB / NEW / SHARED / ISOLATED
+      if (d.is_hub && !d.is_aggregate) {
+        el.append('rect').attr('x', -16).attr('y', -r - 20).attr('width', 32).attr('height', 14).attr('rx', 3).attr('fill', '#78350f');
+        el.append('text').text('HUB').attr('text-anchor', 'middle').attr('dy', -r - 10)
+          .attr('font-size', 9).attr('font-weight', 700).attr('fill', '#fbbf24').attr('letter-spacing', '1.5px');
+      } else if (isNew) {
+        el.append('rect').attr('x', -15).attr('y', -r - 20).attr('width', 30).attr('height', 14).attr('rx', 3).attr('fill', '#064e3b');
+        el.append('text').text('NEW').attr('text-anchor', 'middle').attr('dy', -r - 10)
+          .attr('font-size', 9).attr('font-weight', 700).attr('fill', '#10b981');
+      } else if (isShared) {
+        el.append('rect').attr('x', -26).attr('y', -r - 20).attr('width', 52).attr('height', 14).attr('rx', 3).attr('fill', '#7f1d1d');
+        el.append('text').text('SHARED').attr('text-anchor', 'middle').attr('dy', -r - 10)
+          .attr('font-size', 8).attr('font-weight', 700).attr('fill', '#fca5a5');
+      } else if (d.is_isolated && deg === 0) {
+        el.append('rect').attr('x', -32).attr('y', -r - 20).attr('width', 64).attr('height', 14).attr('rx', 3).attr('fill', '#1e1b4b');
+        el.append('text').text('LOCAL ONLY').attr('text-anchor', 'middle').attr('dy', -r - 10)
+          .attr('font-size', 8).attr('font-weight', 700).attr('fill', '#818cf8');
       }
 
       // Community label
-      if (d.community_id != null) {
-        el.append('text')
-          .text(`C${d.community_id}`)
-          .attr('text-anchor', 'middle')
-          .attr('dy', r + 14)
-          .attr('font-size', 8)
-          .attr('fill', '#6b7280');
+      if (d.community_id != null && !d.is_aggregate) {
+        el.append('text').text(`C${d.community_id}`).attr('text-anchor', 'middle').attr('dy', r + 14)
+          .attr('font-size', 8).attr('fill', '#6b7280');
       }
     });
 
-    // Background click clears selection
-    svg.on('click', () => setSelectedNode(null));
+    /* ── Tick ──────────────────────────────────────────────────────── */
+    const hullLine = d3.line().curve(d3.curveCatmullRomClosed);
+    let tick = 0;
 
-    // --- TICK ---
-    simulation.on('tick', () => {
-      // Curved links
-      linkPath.attr('d', (d) => {
-        const dx = d.target.x - d.source.x;
-        const dy = d.target.y - d.source.y;
-        const dr = Math.sqrt(dx * dx + dy * dy) * 0.8;
-        // Shorten path to stop at node edge
-        const srcR = nodeRadius(d.source);
-        const tgtR = nodeRadius(d.target);
+    sim.on('tick', () => {
+      // Community hulls (every 3rd tick to save perf, only if communities exist)
+      if (commIds.length > 0 && tick % 3 === 0) {
+        hullLayer.selectAll('*').remove();
+        for (const cid of commIds) {
+          const ns = commNodes[cid];
+          if (!ns || ns.length < 3) continue;
+          const pts = ns.map(n => [n.x, n.y]);
+          const hull = d3.polygonHull(pts);
+          if (!hull) continue;
+          const cent = d3.polygonCentroid(hull);
+          const pad = 50;
+          const exp = hull.map(p => {
+            const dx = p[0] - cent[0], dy = p[1] - cent[1];
+            const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+            return [p[0] + dx / dist * pad, p[1] + dy / dist * pad];
+          });
+          const ci = cid % COLORS.length;
+          hullLayer.append('path').attr('d', hullLine(exp))
+            .attr('fill', HULL_FILL[ci]).attr('stroke', HULL_STROKE[ci]).attr('stroke-width', 1.5);
+          // Watermark label
+          hullLayer.append('text').attr('x', cent[0]).attr('y', cent[1])
+            .attr('text-anchor', 'middle').attr('dominant-baseline', 'middle')
+            .attr('font-size', Math.min(28, ns.length * 3 + 12)).attr('font-weight', 800)
+            .attr('fill', COLORS[ci]).attr('opacity', 0.08).text(`C${cid}`);
+        }
+      }
+      tick++;
+
+      // Link paths
+      linkPath.attr('d', d => {
+        const dx = d.target.x - d.source.x, dy = d.target.y - d.source.y;
         const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-        const sx = d.source.x + (dx * srcR) / dist;
-        const sy = d.source.y + (dy * srcR) / dist;
-        const tx = d.target.x - (dx * tgtR) / dist;
-        const ty = d.target.y - (dy * tgtR) / dist;
-        return `M${sx},${sy}A${dr},${dr} 0 0,1 ${tx},${ty}`;
+        const dr = dist * 0.8;
+        const sr = nodeR(d.source), tr = nodeR(d.target);
+        return `M${d.source.x + dx * sr / dist},${d.source.y + dy * sr / dist}A${dr},${dr} 0 0,1 ${d.target.x - dx * tr / dist},${d.target.y - dy * tr / dist}`;
       });
-
-      if (linkLabel) {
-        linkLabel
-          .attr('x', (d) => (d.source.x + d.target.x) / 2)
-          .attr('y', (d) => (d.source.y + d.target.y) / 2);
-      }
-
-      node.attr('transform', (d) => `translate(${d.x},${d.y})`);
+      linkGroup.selectAll('.lh').attr('d', d => {
+        const dx = d.target.x - d.source.x, dy = d.target.y - d.source.y;
+        const dr = Math.sqrt(dx * dx + dy * dy) * 0.8;
+        return `M${d.source.x},${d.source.y}A${dr},${dr} 0 0,1 ${d.target.x},${d.target.y}`;
+      });
+      if (linkLabel) linkLabel.attr('x', d => (d.source.x + d.target.x) / 2).attr('y', d => (d.source.y + d.target.y) / 2);
+      node.attr('transform', d => `translate(${d.x},${d.y})`);
     });
 
-    // Initial zoom to fit
-    simulation.on('end', () => {
-      const bounds = g.node().getBBox();
-      if (bounds.width === 0) return;
-      const pad = 40;
-      const fullWidth = bounds.width + pad * 2;
-      const fullHeight = bounds.height + pad * 2;
-      const scale = Math.min(width / fullWidth, height / fullHeight, 1.2);
-      const tx = width / 2 - (bounds.x + bounds.width / 2) * scale;
-      const ty = height / 2 - (bounds.y + bounds.height / 2) * scale;
-      svg.transition().duration(500).call(
-        zoom.transform,
-        d3.zoomIdentity.translate(tx, ty).scale(scale)
-      );
-    });
+    // Zoom to fit
+    const fitZoom = () => {
+      const b = g.node().getBBox();
+      if (!b.width) return;
+      const p = 50;
+      const s = Math.min(W / (b.width + p * 2), H / (b.height + p * 2), 1.5);
+      const tx = W / 2 - (b.x + b.width / 2) * s, ty = H / 2 - (b.y + b.height / 2) * s;
+      svg.transition().duration(500).call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(s));
+    };
+    sim.on('end', fitZoom);
+    setTimeout(fitZoom, 1200);
 
-    return () => simulation.stop();
-  }, [graphData, width, height]);
+    return () => sim.stop();
+  }, [gd, width, height, changeSet]);
 
-  const isAggregated = graphData?.summary?.aggregated;
+  const isAgg = gd?._agg;
 
   return (
-    <div className="bg-gray-900/50 border border-gray-800 rounded-xl overflow-hidden">
+    <div className="bg-gray-900/50 border border-gray-800 rounded-xl overflow-hidden relative">
       {title && (
-        <div className="px-4 py-2 border-b border-gray-800 flex items-center justify-between">
-          <span className="text-sm font-medium text-gray-300">{title}</span>
+        <div className="px-4 py-2.5 border-b border-gray-800 flex items-center justify-between bg-gray-900/80">
+          <span className="text-sm font-semibold text-gray-200">{title}</span>
           <span className="text-xs text-gray-500">
-            {isAggregated ? (
-              <>
-                {graphData.summary.original_nodes} QMs aggregated into {graphData.summary.total_nodes} groups &middot; {graphData.summary.total_edges} channels
-              </>
-            ) : graphData?.summary ? (
-              <>
-                {graphData.summary.total_nodes} QMs &middot; {graphData.summary.total_edges} channels &middot; {graphData.summary.total_clients} apps
-              </>
-            ) : null}
+            {isAgg
+              ? `${gd.summary.original_nodes} QMs in ${gd.summary.total_nodes} groups`
+              : gd?.summary
+                ? `${gd.summary.total_nodes} QMs \u00b7 ${gd.summary.total_edges} ch \u00b7 ${gd.summary.total_clients || 0} apps`
+                : ''}
+            <span className="text-gray-600 ml-2">scroll=zoom, drag=pan, click=focus</span>
           </span>
         </div>
       )}
-      <svg
-        ref={svgRef}
-        width={width}
-        height={height}
-        className="w-full bg-gray-950/50"
-        viewBox={`0 0 ${width} ${height}`}
-      />
-      {/* Selected node detail panel */}
-      {selectedNode && (
-        <div className="px-4 py-3 border-t border-gray-800 bg-gray-900/80 text-xs">
-          <div className="flex items-center gap-2 mb-2">
-            <span className="font-mono font-bold text-white text-sm">{selectedNode.id}</span>
-            {selectedNode.is_hub && <span className="text-amber-400 font-semibold">HUB</span>}
-            {selectedNode.community_id != null && (
-              <span className="px-1.5 py-0.5 rounded bg-gray-700 text-gray-400">Community {selectedNode.community_id}</span>
-            )}
-            {selectedNode.region && <span className="text-gray-500">{selectedNode.region}</span>}
+      <svg ref={svgRef} className="w-full bg-gray-950/60" style={{ height }} />
+      {/* Tooltip */}
+      <div ref={tipRef} className="absolute pointer-events-none bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 shadow-xl z-50 max-w-xs" style={{ display: 'none' }} />
+      {/* Focus panel */}
+      {focusedNode && (
+        <div className="absolute bottom-2 left-2 right-2 bg-gray-900/95 border border-gray-700 rounded-xl px-4 py-3 backdrop-blur-sm shadow-2xl">
+          <div className="flex items-center gap-2 mb-1.5">
+            <span className="font-mono font-bold text-white text-sm">{focusedNode.id}</span>
+            {focusedNode.is_hub && <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-900/60 text-amber-400 font-bold">HUB</span>}
+            {focusedNode.community_id != null && <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-700 text-gray-400">Community {focusedNode.community_id}</span>}
+            {changeSet?.newNodeIds?.has(focusedNode.id) && <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-900/60 text-emerald-400 font-bold">NEW</span>}
+            {changeSet?.sharedNodeIds?.has(focusedNode.id) && <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-900/60 text-red-400 font-bold">SHARED QM</span>}
+            {focusedNode.is_isolated && focusedNeighbors.length === 0 && <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-900/60 text-indigo-400 font-bold">LOCAL ONLY — no cross-QM channels</span>}
+            <span className="text-xs text-gray-500 ml-auto">
+              <span className="text-white font-semibold">{focusedNeighbors.length}</span> connections
+            </span>
           </div>
-          <div className="grid grid-cols-3 gap-3 text-gray-400 mb-2">
-            <div>Apps: <span className="text-white">{selectedNode.client_count}</span></div>
-            <div>Queues: <span className="text-white">{selectedNode.port_count}</span></div>
-            <div>
-              L:{selectedNode.local_queues || 0} R:{selectedNode.remote_queues || 0} A:{selectedNode.alias_queues || 0}
-            </div>
+          <div className="flex gap-5 text-xs text-gray-400 mb-1.5">
+            <span>Apps: <span className="text-white">{focusedNode.client_count || 0}</span></span>
+            <span>Queues: <span className="text-white">{focusedNode.port_count || 0}</span></span>
+            <span>L:<span className="text-emerald-400">{focusedNode.local_queues || 0}</span> R:<span className="text-amber-400">{focusedNode.remote_queues || 0}</span> A:<span className="text-purple-400">{focusedNode.alias_queues || 0}</span></span>
           </div>
-          {selectedNode.clients && selectedNode.clients.length > 0 && selectedNode.clients.length <= 20 && (
-            <div className="space-y-1">
-              {selectedNode.clients.map((c) => (
-                <div key={c.id} className="flex items-center gap-2">
-                  <span className="font-mono text-indigo-400">{c.app_id}</span>
-                  <span className="text-gray-500">{c.name}</span>
-                  <span className={`px-1 rounded text-[10px] ${
-                    c.role === 'producer' ? 'bg-emerald-900/50 text-emerald-400' :
-                    c.role === 'consumer' ? 'bg-amber-900/50 text-amber-400' :
-                    'bg-purple-900/50 text-purple-400'
-                  }`}>{c.role}</span>
-                </div>
+          {/* Connected QMs */}
+          {focusedNeighbors.length > 0 && (
+            <div className="text-xs text-gray-500 mb-1">
+              Connected to: {focusedNeighbors.slice(0, 15).map((nid, i) => (
+                <span key={nid} className="font-mono text-indigo-400">{i > 0 ? ', ' : ''}{nid}</span>
               ))}
+              {focusedNeighbors.length > 15 && <span className="text-gray-600"> +{focusedNeighbors.length - 15} more</span>}
+            </div>
+          )}
+          {/* Apps on this QM */}
+          {focusedNode.clients?.length > 0 && focusedNode.clients.length <= 12 && (
+            <div className="flex flex-wrap gap-1.5 mt-1 pt-1.5 border-t border-gray-800">
+              {focusedNode.clients.map(c => (
+                <span key={c.id} className="text-[10px] font-mono bg-gray-800 px-1.5 py-0.5 rounded">
+                  <span className="text-indigo-400">{c.app_id}</span>
+                  <span className={`ml-1 ${c.role === 'producer' ? 'text-emerald-500' : c.role === 'consumer' ? 'text-amber-500' : 'text-purple-500'}`}>
+                    {c.role?.[0]?.toUpperCase() || '?'}
+                  </span>
+                </span>
+              ))}
+            </div>
+          )}
+          {/* Aggregate members */}
+          {focusedNode.is_aggregate && focusedNode.members?.length > 0 && (
+            <div className="mt-1 pt-1.5 border-t border-gray-800">
+              <span className="text-[10px] text-gray-600">Members: </span>
+              {focusedNode.members.slice(0, 20).map((m, i) => (
+                <span key={m} className="text-[10px] font-mono text-gray-400">{i > 0 ? ', ' : ''}{m}</span>
+              ))}
+              {focusedNode.members.length > 20 && <span className="text-[10px] text-gray-600"> +{focusedNode.members.length - 20}</span>}
             </div>
           )}
         </div>

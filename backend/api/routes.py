@@ -83,6 +83,12 @@ def _model_to_graph_json(model: TopologyModel) -> dict:
                 key = (c.home_node_id, port.remote_node_id)
                 edge_flows.setdefault(key, []).append(f"{c.app_id} -> {port.remote_node_id}")
 
+    # Pre-compute which nodes have edges (for isolated detection)
+    edge_nodes: set = set()
+    for e in model.edges.values():
+        edge_nodes.add(e.source_node_id)
+        edge_nodes.add(e.target_node_id)
+
     nodes = []
     for n in model.nodes.values():
         clients_on = node_clients.get(n.id, [])
@@ -90,6 +96,7 @@ def _model_to_graph_json(model: TopologyModel) -> dict:
         local_q = sum(1 for p in ports_on if p.direction == PortDirection.LOCAL)
         remote_q = sum(1 for p in ports_on if p.direction == PortDirection.REMOTE)
         alias_q = sum(1 for p in ports_on if p.direction == PortDirection.ALIAS)
+        is_isolated = n.id not in edge_nodes
 
         nodes.append({
             "id": n.id,
@@ -98,6 +105,7 @@ def _model_to_graph_json(model: TopologyModel) -> dict:
             "region": n.region,
             "community_id": n.community_id,
             "is_hub": n.is_hub,
+            "is_isolated": is_isolated,
             "client_count": len(clients_on),
             "clients": [
                 {"id": c.id, "app_id": c.app_id, "name": c.app_name, "role": c.role.value}
