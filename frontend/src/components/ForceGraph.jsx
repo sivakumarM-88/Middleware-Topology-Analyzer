@@ -456,51 +456,128 @@ export default function ForceGraph({ data, width = 900, height = 600, title, onS
       <div ref={tipRef} className="absolute pointer-events-none bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 shadow-xl z-50 max-w-xs" style={{ display: 'none' }} />
       {/* Focus panel */}
       {focusedNode && (
-        <div className="absolute bottom-2 left-2 right-2 bg-gray-900/95 border border-gray-700 rounded-xl px-4 py-3 backdrop-blur-sm shadow-2xl">
-          <div className="flex items-center gap-2 mb-1.5">
+        <div className="absolute bottom-2 left-2 right-2 bg-gray-900/95 border border-gray-700 rounded-xl px-4 py-3 backdrop-blur-sm shadow-2xl max-h-[50%] overflow-y-auto">
+          {/* Header row */}
+          <div className="flex items-center gap-2 mb-1.5 flex-wrap">
             <span className="font-mono font-bold text-white text-sm">{focusedNode.id}</span>
             {focusedNode.is_hub && <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-900/60 text-amber-400 font-bold">HUB</span>}
-            {focusedNode.community_id != null && <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-700 text-gray-400">Community {focusedNode.community_id}</span>}
+            {focusedNode.community_id != null && <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-700 text-gray-400">C{focusedNode.community_id}</span>}
             {changeSet?.newNodeIds?.has(focusedNode.id) && <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-900/60 text-emerald-400 font-bold">NEW</span>}
             {changeSet?.sharedNodeIds?.has(focusedNode.id) && <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-900/60 text-red-400 font-bold">SHARED QM</span>}
-            {focusedNode.is_isolated && focusedNeighbors.length === 0 && <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-900/60 text-indigo-400 font-bold">LOCAL ONLY — no cross-QM channels</span>}
+            {focusedNode.is_isolated && focusedNeighbors.length === 0 && <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-900/60 text-indigo-400 font-bold">LOCAL ONLY</span>}
             <span className="text-xs text-gray-500 ml-auto">
               <span className="text-white font-semibold">{focusedNeighbors.length}</span> connections
             </span>
           </div>
-          <div className="flex gap-5 text-xs text-gray-400 mb-1.5">
-            <span>Apps: <span className="text-white">{focusedNode.client_count || 0}</span></span>
-            <span>Queues: <span className="text-white">{focusedNode.port_count || 0}</span></span>
-            <span>L:<span className="text-emerald-400">{focusedNode.local_queues || 0}</span> R:<span className="text-amber-400">{focusedNode.remote_queues || 0}</span> A:<span className="text-purple-400">{focusedNode.alias_queues || 0}</span></span>
+
+          {/* Summary counts */}
+          <div className="flex gap-4 text-xs text-gray-400 mb-2">
+            <span>Apps: <span className="text-white font-semibold">{focusedNode.client_count || 0}</span></span>
+            <span>Queues: <span className="text-white font-semibold">{focusedNode.port_count || 0}</span></span>
+            <span>
+              L:<span className="text-emerald-400 font-semibold">{focusedNode.local_queues || 0}</span>{' '}
+              R:<span className="text-amber-400 font-semibold">{focusedNode.remote_queues || 0}</span>{' '}
+              A:<span className="text-purple-400 font-semibold">{focusedNode.alias_queues || 0}</span>
+            </span>
           </div>
+
           {/* Connected QMs */}
           {focusedNeighbors.length > 0 && (
-            <div className="text-xs text-gray-500 mb-1">
+            <div className="text-xs text-gray-500 mb-2">
               Connected to: {focusedNeighbors.slice(0, 15).map((nid, i) => (
                 <span key={nid} className="font-mono text-indigo-400">{i > 0 ? ', ' : ''}{nid}</span>
               ))}
               {focusedNeighbors.length > 15 && <span className="text-gray-600"> +{focusedNeighbors.length - 15} more</span>}
             </div>
           )}
-          {/* Apps on this QM */}
-          {focusedNode.clients?.length > 0 && focusedNode.clients.length <= 12 && (
-            <div className="flex flex-wrap gap-1.5 mt-1 pt-1.5 border-t border-gray-800">
-              {focusedNode.clients.map(c => (
-                <span key={c.id} className="text-[10px] font-mono bg-gray-800 px-1.5 py-0.5 rounded">
-                  <span className="text-indigo-400">{c.app_id}</span>
-                  <span className={`ml-1 ${c.role === 'producer' ? 'text-emerald-500' : c.role === 'consumer' ? 'text-amber-500' : 'text-purple-500'}`}>
-                    {c.role?.[0]?.toUpperCase() || '?'}
-                  </span>
-                </span>
-              ))}
+
+          {/* Apps + their queues */}
+          {focusedNode.clients?.length > 0 && (
+            <div className="border-t border-gray-800 pt-2 mt-1">
+              <div className="text-[10px] text-gray-500 font-semibold uppercase tracking-wider mb-1">
+                Applications ({focusedNode.clients.length})
+              </div>
+              <div className="space-y-2">
+                {focusedNode.clients.slice(0, 8).map(c => {
+                  const lq = c.queues?.filter(q => q.type === 'local') || [];
+                  const rq = c.queues?.filter(q => q.type === 'remote') || [];
+                  const aq = c.queues?.filter(q => q.type === 'alias') || [];
+                  const xq = c.queues?.filter(q => q.type === 'transmission') || [];
+                  return (
+                    <div key={c.id} className="bg-gray-800/60 rounded-lg px-2.5 py-1.5">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="font-mono text-indigo-400 text-xs font-bold">{c.app_id}</span>
+                        <span className="text-gray-500 text-[10px] truncate max-w-[120px]">{c.name}</span>
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded ${
+                          c.role === 'producer' ? 'bg-emerald-900/50 text-emerald-400' :
+                          c.role === 'consumer' ? 'bg-amber-900/50 text-amber-400' :
+                          'bg-purple-900/50 text-purple-400'
+                        }`}>{c.role}</span>
+                      </div>
+                      {/* Queue breakdown */}
+                      <div className="space-y-0.5">
+                        {lq.length > 0 && (
+                          <div className="flex flex-wrap gap-1 items-start">
+                            <span className="text-[9px] text-emerald-500 font-semibold w-10 shrink-0">LOCAL</span>
+                            {lq.slice(0, 5).map((q, i) => (
+                              <span key={i} className="font-mono text-[9px] bg-emerald-950/40 border border-emerald-900/30 px-1 py-0.5 rounded text-emerald-300 truncate max-w-[180px]">{q.name}</span>
+                            ))}
+                            {lq.length > 5 && <span className="text-[9px] text-gray-600">+{lq.length - 5}</span>}
+                          </div>
+                        )}
+                        {rq.length > 0 && (
+                          <div className="flex flex-wrap gap-1 items-start">
+                            <span className="text-[9px] text-amber-500 font-semibold w-10 shrink-0">REMOTE</span>
+                            {rq.slice(0, 5).map((q, i) => (
+                              <span key={i} className="font-mono text-[9px] bg-amber-950/40 border border-amber-900/30 px-1 py-0.5 rounded text-amber-300 truncate max-w-[180px]" title={`${q.name} → ${q.remote_qm || '?'}${q.xmit_queue ? ' via ' + q.xmit_queue : ''}`}>
+                                {q.name} <span className="text-gray-500">{'\u2192'}</span> <span className="text-white">{q.remote_qm}</span>
+                              </span>
+                            ))}
+                            {rq.length > 5 && <span className="text-[9px] text-gray-600">+{rq.length - 5}</span>}
+                          </div>
+                        )}
+                        {aq.length > 0 && (
+                          <div className="flex flex-wrap gap-1 items-start">
+                            <span className="text-[9px] text-purple-500 font-semibold w-10 shrink-0">ALIAS</span>
+                            {aq.slice(0, 5).map((q, i) => (
+                              <span key={i} className="font-mono text-[9px] bg-purple-950/40 border border-purple-900/30 px-1 py-0.5 rounded text-purple-300 truncate max-w-[180px]">
+                                {q.name}{q.remote_queue ? ` → ${q.remote_queue}` : ''}
+                              </span>
+                            ))}
+                            {aq.length > 5 && <span className="text-[9px] text-gray-600">+{aq.length - 5}</span>}
+                          </div>
+                        )}
+                        {xq.length > 0 && (
+                          <div className="flex flex-wrap gap-1 items-start">
+                            <span className="text-[9px] text-cyan-500 font-semibold w-10 shrink-0">XMIT</span>
+                            {xq.slice(0, 5).map((q, i) => (
+                              <span key={i} className="font-mono text-[9px] bg-cyan-950/40 border border-cyan-900/30 px-1 py-0.5 rounded text-cyan-300 truncate max-w-[180px]">{q.name}</span>
+                            ))}
+                            {xq.length > 5 && <span className="text-[9px] text-gray-600">+{xq.length - 5}</span>}
+                          </div>
+                        )}
+                        {lq.length === 0 && rq.length === 0 && aq.length === 0 && xq.length === 0 && (
+                          <span className="text-[9px] text-gray-600">No queues</span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+                {focusedNode.clients.length > 8 && (
+                  <span className="text-[10px] text-gray-600">+{focusedNode.clients.length - 8} more apps</span>
+                )}
+              </div>
             </div>
           )}
+
           {/* Channels from/to this node */}
           {focusedEdges.length > 0 && (
-            <div className="mt-1.5 pt-1.5 border-t border-gray-800">
-              <span className="text-[10px] text-gray-500 font-semibold">Channels ({focusedEdges.length}):</span>
-              <div className="grid gap-0.5 mt-0.5 max-h-24 overflow-y-auto">
-                {focusedEdges.slice(0, 15).map((e, i) => (
+            <div className="border-t border-gray-800 pt-2 mt-2">
+              <div className="text-[10px] text-gray-500 font-semibold uppercase tracking-wider mb-1">
+                Channels ({focusedEdges.length})
+              </div>
+              <div className="grid gap-0.5 max-h-28 overflow-y-auto">
+                {focusedEdges.slice(0, 20).map((e, i) => (
                   <div key={i} className="text-[10px] font-mono flex items-center gap-1.5 flex-wrap">
                     <span className="text-indigo-400">{e.name}</span>
                     <span className="text-gray-600">{e.from} {'\u2192'} {e.to}</span>
@@ -513,13 +590,21 @@ export default function ForceGraph({ data, width = 900, height = 600, title, onS
                     {e.flows.length > 0 && <span className="text-gray-600 text-[9px]">{e.flows[0]}{e.flows.length > 1 ? ` +${e.flows.length - 1}` : ''}</span>}
                   </div>
                 ))}
-                {focusedEdges.length > 15 && <span className="text-[10px] text-gray-600">+{focusedEdges.length - 15} more</span>}
+                {focusedEdges.length > 20 && <span className="text-[10px] text-gray-600">+{focusedEdges.length - 20} more</span>}
               </div>
             </div>
           )}
+
+          {/* No channels message for isolated nodes */}
+          {focusedEdges.length === 0 && focusedNeighbors.length === 0 && (
+            <div className="border-t border-gray-800 pt-2 mt-2 text-[10px] text-gray-600">
+              No channels — this QM has only local queues (self-contained)
+            </div>
+          )}
+
           {/* Aggregate members */}
           {focusedNode.is_aggregate && focusedNode.members?.length > 0 && (
-            <div className="mt-1 pt-1.5 border-t border-gray-800">
+            <div className="border-t border-gray-800 pt-2 mt-2">
               <span className="text-[10px] text-gray-600">Members: </span>
               {focusedNode.members.slice(0, 20).map((m, i) => (
                 <span key={m} className="text-[10px] font-mono text-gray-400">{i > 0 ? ', ' : ''}{m}</span>
