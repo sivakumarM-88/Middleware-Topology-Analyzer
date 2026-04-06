@@ -7,6 +7,7 @@ export default function Chat() {
   ]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [useLLM, setUseLLM] = useState(false);
   const endRef = useRef();
 
   useEffect(() => {
@@ -22,8 +23,8 @@ export default function Chat() {
     setLoading(true);
 
     try {
-      const res = await sendChat(msg);
-      setMessages((prev) => [...prev, { role: 'assistant', content: res.response }]);
+      const res = await sendChat(msg, useLLM);
+      setMessages((prev) => [...prev, { role: 'assistant', content: res.response, llm: useLLM }]);
     } catch (err) {
       setMessages((prev) => [...prev, { role: 'assistant', content: `Error: ${err.message}` }]);
     } finally {
@@ -44,13 +45,18 @@ export default function Chat() {
               }`}
             >
               {m.content}
+              {m.role === 'assistant' && i > 0 && (
+                <div className="mt-1.5 text-[10px] text-gray-600">
+                  {m.llm ? 'via LLM' : 'local analysis'}
+                </div>
+              )}
             </div>
           </div>
         ))}
         {loading && (
           <div className="flex justify-start">
             <div className="bg-gray-800 border border-gray-700 text-gray-400 px-4 py-3 rounded-2xl rounded-bl-md text-sm">
-              Thinking...
+              {useLLM ? 'Thinking with LLM...' : 'Analyzing...'}
             </div>
           </div>
         )}
@@ -58,6 +64,25 @@ export default function Chat() {
       </div>
 
       <div className="border-t border-gray-800 pt-4">
+        {/* LLM Toggle */}
+        <div className="flex items-center gap-3 mb-3">
+          <button
+            onClick={() => setUseLLM(false)}
+            className={`px-3 py-1.5 text-xs rounded-lg transition ${!useLLM ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-gray-200'}`}
+          >
+            Local Analysis
+          </button>
+          <button
+            onClick={() => setUseLLM(true)}
+            className={`px-3 py-1.5 text-xs rounded-lg transition ${useLLM ? 'bg-emerald-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-gray-200'}`}
+          >
+            With LLM
+          </button>
+          <span className="text-[10px] text-gray-600">
+            {useLLM ? 'Uses Ollama/Claude for open-ended reasoning' : 'Fast pattern-matched answers from topology data'}
+          </span>
+        </div>
+        {/* Input */}
         <div className="flex gap-2">
           <input
             type="text"

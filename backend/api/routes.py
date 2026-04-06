@@ -55,6 +55,7 @@ class OnboardApplyRequest(BaseModel):
 
 class ChatRequest(BaseModel):
     message: str
+    use_llm: bool = False
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -551,6 +552,7 @@ async def chat(req: ChatRequest):
         metrics=metrics,
         decision_log=log,
         optimization_result=opt_result,
+        use_llm=req.use_llm,
     )
 
     return {"response": response}

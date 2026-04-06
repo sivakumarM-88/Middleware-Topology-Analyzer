@@ -202,13 +202,15 @@ class ChatAgent:
         metrics: ComplexityMetrics,
         decision_log: Optional[DecisionLog] = None,
         optimization_result: Any = None,
+        use_llm: bool = False,
     ) -> str:
         """Send a message and get a response.
 
-        Strategy: Try the precise local handler first for structured queries
-        (orphans, counts, where, why, etc.) — these give exact data-driven answers.
-        If no local pattern matches (returns None), use Ollama/Claude for
-        open-ended reasoning.
+        When use_llm=False (default): only uses local pattern matching for
+        precise, data-driven answers. Fast and deterministic.
+
+        When use_llm=True: tries local first, then falls back to
+        Ollama/Claude for open-ended reasoning with full topology context.
         """
         # Step 1: Try precise local analysis for structured queries
         local_result = self._chat_local(
@@ -217,7 +219,11 @@ class ChatAgent:
         if local_result is not None:
             return local_result
 
-        # Step 2: For open-ended questions, use LLM
+        # Step 2: If LLM mode is off, return a helpful message
+        if not use_llm:
+            return self._fallback_help(model, metrics)
+
+        # Step 3: LLM mode — use Ollama or Claude for open-ended reasoning
         topology_context = _build_topology_context(
             model, metrics, decision_log, optimization_result
         )
@@ -234,11 +240,14 @@ class ChatAgent:
             import anthropic
             client = anthropic.Anthropic()
             return self._chat_claude(client, message, topology_context)
-        except Exception:
-            pass
-
-        # Final fallback: generic help message
-        return self._fallback_help(model, metrics)
+        except Exception as e:
+            return (
+                f"LLM is enabled but no LLM backend is available.\n\n"
+                f"**To use LLM mode, configure one of:**\n"
+                f"- **Ollama** (local): Run `ollama serve` with a model like `qwen3:8b`\n"
+                f"- **Claude API**: Set the `ANTHROPIC_API_KEY` environment variable\n\n"
+                f"_Error: {e}_"
+            )
 
     def _chat_ollama(self, message: str, topology_context: str) -> str:
         """Chat via Ollama REST API."""

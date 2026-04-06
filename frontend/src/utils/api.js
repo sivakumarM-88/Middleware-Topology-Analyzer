@@ -66,10 +66,10 @@ export async function applyOnboard(appId, optionIndex) {
   return res.json();
 }
 
-export async function sendChat(message) {
+export async function sendChat(message, useLLM = false) {
   const res = await request('/chat', {
     method: 'POST',
-    body: JSON.stringify({ message }),
+    body: JSON.stringify({ message, use_llm: useLLM }),
   });
   return res.json();
 }
