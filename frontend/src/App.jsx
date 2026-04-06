@@ -14,6 +14,7 @@ export default function App() {
   const [uploading, setUploading] = useState(false);
   const [optimizing, setOptimizing] = useState(false);
   const [error, setError] = useState(null);
+  const [resolution, setResolution] = useState(1.0);
 
   // Data
   const [uploadResult, setUploadResult] = useState(null);
@@ -48,7 +49,7 @@ export default function App() {
     setError(null);
     setOptimizing(true);
     try {
-      const res = await runOptimization();
+      const res = await runOptimization(resolution);
       setOptResult(res);
       setOptimized(true);
 
@@ -67,7 +68,7 @@ export default function App() {
     } finally {
       setOptimizing(false);
     }
-  }, []);
+  }, [resolution]);
 
   return (
     <div className="min-h-screen bg-gray-950 text-gray-100">
@@ -105,6 +106,16 @@ export default function App() {
                     onChange={(e) => e.target.files[0] && handleUpload(e.target.files[0])}
                   />
                 </label>
+                <div className="flex items-center gap-2 bg-gray-800 rounded-lg px-3 py-1.5">
+                  <label className="text-[10px] text-gray-400 whitespace-nowrap">Resolution</label>
+                  <input
+                    type="range" min="0.3" max="3.0" step="0.1"
+                    value={resolution}
+                    onChange={(e) => setResolution(parseFloat(e.target.value))}
+                    className="w-20 accent-emerald-500"
+                  />
+                  <span className="text-xs font-mono text-emerald-400 w-7">{resolution.toFixed(1)}</span>
+                </div>
                 <button
                   onClick={handleOptimize}
                   disabled={optimizing}
@@ -116,6 +127,23 @@ export default function App() {
             )}
             {optimized && (
               <>
+                <div className="flex items-center gap-2 bg-gray-800 rounded-lg px-3 py-1.5">
+                  <label className="text-[10px] text-gray-400 whitespace-nowrap">Resolution</label>
+                  <input
+                    type="range" min="0.3" max="3.0" step="0.1"
+                    value={resolution}
+                    onChange={(e) => setResolution(parseFloat(e.target.value))}
+                    className="w-20 accent-emerald-500"
+                  />
+                  <span className="text-xs font-mono text-emerald-400 w-7">{resolution.toFixed(1)}</span>
+                </div>
+                <button
+                  onClick={handleOptimize}
+                  disabled={optimizing}
+                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-sm rounded-lg transition disabled:opacity-50"
+                >
+                  {optimizing ? 'Re-optimize' : 'Re-optimize'}
+                </button>
                 <label className="px-3 py-2 bg-gray-700 hover:bg-gray-600 text-sm rounded-lg cursor-pointer transition">
                   Re-upload
                   <input

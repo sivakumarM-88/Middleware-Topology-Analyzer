@@ -23,8 +23,11 @@ export async function uploadCSV(file) {
   return res.json();
 }
 
-export async function runOptimization() {
-  const res = await request('/optimize', { method: 'POST' });
+export async function runOptimization(resolution = 1.0) {
+  const res = await request('/optimize', {
+    method: 'POST',
+    body: JSON.stringify({ resolution }),
+  });
   return res.json();
 }
 

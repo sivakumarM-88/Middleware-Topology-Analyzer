@@ -256,16 +256,20 @@ async def upload_csv(file: UploadFile = File(...)):
             os.unlink(tmp_path)
 
 
+class OptimizeRequest(BaseModel):
+    resolution: float = 1.0
+
+
 @router.post("/optimize")
-async def run_optimization():
-    """Run the full optimization pipeline."""
+async def run_optimization(req: OptimizeRequest = OptimizeRequest()):
+    """Run the full optimization pipeline with tunable Louvain resolution."""
     model = _state.get("as_is_model")
     if model is None:
         raise HTTPException(400, "No topology loaded. Upload a CSV first.")
 
     try:
         pipeline = OptimizationPipeline(_scorer)
-        result = pipeline.run(model.deep_copy())
+        result = pipeline.run(model.deep_copy(), resolution=req.resolution)
 
         _state["target_model"] = result.target_model
         _state["optimization_result"] = result

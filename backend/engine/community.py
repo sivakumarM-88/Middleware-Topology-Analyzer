@@ -13,8 +13,9 @@ from .model import TopologyModel
 class CommunityDetector:
     """Detect communities of closely-connected QMs using Louvain."""
 
-    def __init__(self, decision_log: DecisionLog):
+    def __init__(self, decision_log: DecisionLog, resolution: float = 1.0):
         self.log = decision_log
+        self.resolution = resolution
 
     def run(self, model: TopologyModel) -> TopologyModel:
         ug = model.get_undirected_graph()
@@ -30,8 +31,12 @@ class CommunityDetector:
             )
             return model
 
-        # Run Louvain community detection
-        partition = community_louvain.best_partition(ug, random_state=42)
+        # Run Louvain community detection with tunable resolution
+        # resolution > 1.0 → smaller, tighter communities
+        # resolution < 1.0 → larger, broader communities
+        partition = community_louvain.best_partition(
+            ug, resolution=self.resolution, random_state=42
+        )
         modularity = community_louvain.modularity(partition, ug)
 
         # Assign community IDs to nodes
@@ -58,12 +63,13 @@ class CommunityDetector:
             subject_id="all",
             description=(
                 f"Detected {len(communities)} communities via Louvain "
-                f"(modularity={modularity:.3f})"
+                f"(resolution={self.resolution}, modularity={modularity:.3f})"
             ),
-            reason="Group QMs that exchange most traffic internally",
+            reason=f"Group QMs that exchange most traffic internally (resolution={self.resolution})",
             evidence={
                 "community_count": len(communities),
                 "modularity": round(modularity, 4),
+                "resolution": self.resolution,
                 "communities": {
                     str(cid): members for cid, members in sorted(communities.items())
                 },

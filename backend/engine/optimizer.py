@@ -66,7 +66,7 @@ class OptimizationPipeline:
     def __init__(self, scorer: ComplexityScorer | None = None):
         self.scorer = scorer or ComplexityScorer()
 
-    def run(self, model: TopologyModel) -> OptimizationResult:
+    def run(self, model: TopologyModel, resolution: float = 1.0) -> OptimizationResult:
         log = DecisionLog()
 
         # Snapshot the as-is model (pre-discovery, for reference)
@@ -103,10 +103,10 @@ class OptimizationPipeline:
         )
         stage_results.append(sr)
 
-        # Stage 3: Community Detection
+        # Stage 3: Community Detection (resolution tunable: >1 = smaller, <1 = larger)
         model, sr = self._run_stage(
             "Stage 3: Community Detection",
-            CommunityDetector(log),
+            CommunityDetector(log, resolution=resolution),
             model,
         )
         stage_results.append(sr)
